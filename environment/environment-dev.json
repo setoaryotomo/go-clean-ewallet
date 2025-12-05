@@ -1,0 +1,10 @@
+{
+  "driver": "postgres",
+  "database": {
+    "db_name": "sample",
+    "db_port": "5432",
+    "db_user": "widananurazis",
+    "db_pass": "widananur15",
+    "ssl_mode": "disable"
+  }
+}

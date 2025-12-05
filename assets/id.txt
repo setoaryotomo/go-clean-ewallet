@@ -1,0 +1,3 @@
+# P
+ProductCode=Kode Produk
+ProductName=Nama Produk

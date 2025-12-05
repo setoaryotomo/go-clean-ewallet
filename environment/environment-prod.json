@@ -1,0 +1,10 @@
+{
+  "driver": "postgres",
+  "database": {
+    "db_name": "lakupandaiprodukretail",
+    "db_port": "5432",
+    "db_user": "widana",
+    "db_pass": "widananur15",
+    "ssl_mode": "disable"
+  }
+}
