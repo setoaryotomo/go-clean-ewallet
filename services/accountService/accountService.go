@@ -37,6 +37,18 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
+	// Validasi PIN harus 6 karakter dan hanya angka
+	if len(request.PIN) != 6 {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "panjang PIN harus 6 karakter", nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Validasi PIN hanya boleh berisi angka
+	if !isNumeric(request.PIN) {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "PIN harus berupa angka", nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
 	// Hash PIN menggunakan bcrypt
 	hashedPIN, err := hashPIN(request.PIN)
 	if err != nil {
@@ -69,6 +81,13 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		}
 	}
 
+	// Mulai transaction untuk create account
+	tx, err := svc.Service.RepoDB.Begin()
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to start transaction", nil)
+		return ctx.JSON(http.StatusInternalServerError, result)
+	}
+
 	// Set account data
 	account := models.Account{
 		AccountNumber: accountNumber,
@@ -82,7 +101,14 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 	// Insert ke database
 	id, err := svc.Service.AccountRepo.AddAccount(account)
 	if err != nil {
+		tx.Rollback()
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
+		return ctx.JSON(http.StatusInternalServerError, result)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to commit transaction", nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
@@ -97,6 +123,16 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account created successfully", response)
 	return ctx.JSON(http.StatusOK, result)
+}
+
+// Helper function untuk mengecek apakah string hanya berisi angka
+func isNumeric(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // GetAccountList mendapatkan list semua akun
@@ -131,7 +167,7 @@ func (svc accountService) GetAccountList(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// GetAccountByID mendapatkan detail akun berdasarkan ID (POST method)
+// GetAccountByID mendapatkan detail akun berdasarkan ID
 func (svc accountService) GetAccountByID(ctx echo.Context) error {
 	var result models.Response
 
@@ -194,280 +230,6 @@ func (svc accountService) GetAccountDetailByID(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// GetAccountByNumber mendapatkan detail akun berdasarkan nomor akun
-func (svc accountService) GetAccountByNumber(ctx echo.Context) error {
-	var result models.Response
-
-	accountNumber := ctx.Param("account_number")
-
-	account, err := svc.Service.AccountRepo.FindAccountByNumber(accountNumber)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusNotFound, result)
-	}
-
-	// Response tanpa PIN
-	response := models.AccountResponse{
-		ID:            account.ID,
-		AccountNumber: account.AccountNumber,
-		AccountName:   account.AccountName,
-		Balance:       account.Balance,
-		CreatedAt:     account.CreatedAt,
-	}
-
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, constans.EMPTY_VALUE, response)
-	return ctx.JSON(http.StatusOK, result)
-}
-
-// CheckBalance cek saldo dengan verifikasi PIN
-func (svc accountService) CheckBalance(ctx echo.Context) error {
-	var result models.Response
-
-	request := new(models.RequestCheckBalance)
-	if err := helpers.BindValidateStruct(ctx, request); err != nil {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Verifikasi PIN
-	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
-		return ctx.JSON(http.StatusNotFound, result)
-	}
-
-	if !checkPINHash(request.PIN, account.PIN) {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid PIN", nil)
-		return ctx.JSON(http.StatusUnauthorized, result)
-	}
-
-	response := models.BalanceResponse{
-		AccountNumber: account.AccountNumber,
-		AccountName:   account.AccountName,
-		Balance:       account.Balance,
-	}
-
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, constans.EMPTY_VALUE, response)
-	return ctx.JSON(http.StatusOK, result)
-}
-
-// Deposit menambah saldo
-func (svc accountService) Deposit(ctx echo.Context) error {
-	var result models.Response
-
-	request := new(models.RequestDeposit)
-	if err := helpers.BindValidateStruct(ctx, request); err != nil {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Cek akun exists
-	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
-		return ctx.JSON(http.StatusNotFound, result)
-	}
-
-	// Update balance
-	err = svc.Service.AccountRepo.UpdateBalance(request.AccountNumber, request.Amount)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	response := map[string]interface{}{
-		"account_number":   account.AccountNumber,
-		"account_name":     account.AccountName,
-		"balance_before":   account.Balance,
-		"deposit_amount":   request.Amount,
-		"balance_after":    account.Balance + request.Amount,
-		"transaction_date": time.Now(),
-	}
-
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Deposit successful", response)
-	return ctx.JSON(http.StatusOK, result)
-}
-
-// Withdraw menarik saldo
-func (svc accountService) Withdraw(ctx echo.Context) error {
-	var result models.Response
-
-	request := new(models.RequestWithdraw)
-	if err := helpers.BindValidateStruct(ctx, request); err != nil {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Verifikasi PIN
-	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
-		return ctx.JSON(http.StatusNotFound, result)
-	}
-
-	if !checkPINHash(request.PIN, account.PIN) {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid PIN", nil)
-		return ctx.JSON(http.StatusUnauthorized, result)
-	}
-
-	// Cek saldo cukup
-	if account.Balance < request.Amount {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Insufficient balance", nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Update balance (amount negatif untuk withdraw)
-	err = svc.Service.AccountRepo.UpdateBalance(request.AccountNumber, -request.Amount)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	response := map[string]interface{}{
-		"account_number":   account.AccountNumber,
-		"account_name":     account.AccountName,
-		"balance_before":   account.Balance,
-		"withdraw_amount":  request.Amount,
-		"balance_after":    account.Balance - request.Amount,
-		"transaction_date": time.Now(),
-	}
-
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Withdraw successful", response)
-	return ctx.JSON(http.StatusOK, result)
-}
-
-// Transfer transfer antar akun
-func (svc accountService) Transfer(ctx echo.Context) error {
-	var result models.Response
-
-	request := new(models.RequestTransfer)
-	if err := helpers.BindValidateStruct(ctx, request); err != nil {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Validasi tidak bisa transfer ke akun sendiri
-	if request.FromAccountNumber == request.ToAccountNumber {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Cannot transfer to same account", nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Get akun pengirim
-	fromAccount, err := svc.Service.AccountRepo.FindAccountByNumber(request.FromAccountNumber)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "From account not found", nil)
-		return ctx.JSON(http.StatusNotFound, result)
-	}
-
-	// Verifikasi PIN
-	if !checkPINHash(request.PIN, fromAccount.PIN) {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid PIN", nil)
-		return ctx.JSON(http.StatusUnauthorized, result)
-	}
-
-	// Cek saldo cukup
-	if fromAccount.Balance < request.Amount {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Insufficient balance", nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Get akun penerima
-	toAccount, err := svc.Service.AccountRepo.FindAccountByNumber(request.ToAccountNumber)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "To account not found", nil)
-		return ctx.JSON(http.StatusNotFound, result)
-	}
-
-	if toAccount.Balance < 0 {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "error", nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Mulai transaction
-	tx, err := svc.Service.RepoDB.Begin()
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to start transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Kurangi saldo pengirim
-	err = svc.Service.AccountRepo.UpdateBalance(request.FromAccountNumber, -request.Amount)
-	if err != nil {
-		tx.Rollback()
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to deduct from sender", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Tambah saldo penerima
-	err = svc.Service.AccountRepo.UpdateBalance(request.ToAccountNumber, request.Amount)
-	if err != nil {
-		tx.Rollback()
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to add to receiver", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to commit transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Generate transaction ID
-	transactionID := fmt.Sprintf("TRF-%s-%d", request.FromAccountNumber, time.Now().Unix())
-
-	response := models.TransferResponse{
-		TransactionID:     transactionID,
-		FromAccountNumber: request.FromAccountNumber,
-		ToAccountNumber:   request.ToAccountNumber,
-		Amount:            request.Amount,
-		TransactionDate:   time.Now(),
-	}
-
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Transfer successful", response)
-	return ctx.JSON(http.StatusOK, result)
-}
-
-// UpdatePIN update PIN akun
-func (svc accountService) UpdatePIN(ctx echo.Context) error {
-	var result models.Response
-
-	request := new(models.RequestUpdatePIN)
-	if err := helpers.BindValidateStruct(ctx, request); err != nil {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Get account
-	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
-		return ctx.JSON(http.StatusNotFound, result)
-	}
-
-	// Verifikasi old PIN
-	if !checkPINHash(request.OldPIN, account.PIN) {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid old PIN", nil)
-		return ctx.JSON(http.StatusUnauthorized, result)
-	}
-
-	// Hash new PIN
-	hashedNewPIN, err := hashPIN(request.NewPIN)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to hash new PIN", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Update PIN
-	err = svc.Service.AccountRepo.UpdatePIN(request.AccountNumber, hashedNewPIN)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "PIN updated successfully", nil)
-	return ctx.JSON(http.StatusOK, result)
-}
-
 // UpdateAccount update data akun
 func (svc accountService) UpdateAccount(ctx echo.Context) error {
 	var result models.Response
@@ -502,7 +264,7 @@ func (svc accountService) UpdateAccount(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// DeleteAccount soft delete akun (POST method)
+// DeleteAccount delete akun
 func (svc accountService) DeleteAccount(ctx echo.Context) error {
 	var result models.Response
 

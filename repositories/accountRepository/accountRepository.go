@@ -164,26 +164,6 @@ func (ctx accountRepository) UpdateBalance(accountNumber string, amount float64)
 	return nil
 }
 
-// UpdatePIN update PIN akun
-func (ctx accountRepository) UpdatePIN(accountNumber string, newPIN string) error {
-	var strQuery = `UPDATE account 
-					SET pin = $2,
-					    updated_at = $3
-					WHERE account_number = $1 AND deleted_at IS NULL
-					RETURNING id`
-
-	var ID int
-	err := ctx.RepoDB.DB.QueryRow(strQuery, accountNumber, newPIN, time.Now()).Scan(&ID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return errors.New("Account not found")
-		}
-		return err
-	}
-
-	return nil
-}
-
 // RemoveAccount soft delete akun
 func (ctx accountRepository) RemoveAccount(id int) error {
 	result, err := ctx.RepoDB.DB.Exec(

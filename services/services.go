@@ -13,6 +13,7 @@ type UsecaseService struct {
 	PedagangKiosPoinRepo    repositories.PedagangKiosPoinRepository
 	PedagangKiosGradingRepo repositories.PedagangKiosGradingRepository
 	AccountRepo             repositories.AccountRepository
+	TransactionRepo         repositories.TransactionRepository
 }
 
 func NewUsecaseService(repoDB *sql.DB,
@@ -22,12 +23,14 @@ func NewUsecaseService(repoDB *sql.DB,
 	PedagangKiosPoinRepo repositories.PedagangKiosPoinRepository,
 	PedagangKiosGradingRepo repositories.PedagangKiosGradingRepository,
 	AccountRepo repositories.AccountRepository,
+	TransactionRepo repositories.TransactionRepository,
 ) UsecaseService {
 	return UsecaseService{
 		RepoDB:                  repoDB,
 		WarehouseRepo:           WarehouseRepo,
 		ProductRepo:             ProductRepo,
 		AccountRepo:             AccountRepo,
+		TransactionRepo:         TransactionRepo,
 		ProductMongoRepo:        ProductMongoRepo,
 		PedagangKiosPoinRepo:    PedagangKiosPoinRepo,
 		PedagangKiosGradingRepo: PedagangKiosGradingRepo,

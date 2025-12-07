@@ -42,29 +42,6 @@ type RequestUpdatePIN struct {
 	NewPIN        string `json:"new_pin" validate:"required,len=6"`
 }
 
-type RequestTransfer struct {
-	FromAccountNumber string  `json:"from_account_number" validate:"required"`
-	ToAccountNumber   string  `json:"to_account_number" validate:"required"`
-	Amount            float64 `json:"amount" validate:"required,min=10000"`
-	PIN               string  `json:"pin" validate:"required,len=6"`
-}
-
-type RequestCheckBalance struct {
-	AccountNumber string `json:"account_number" validate:"required"`
-	PIN           string `json:"pin" validate:"required,len=6"`
-}
-
-type RequestDeposit struct {
-	AccountNumber string  `json:"account_number" validate:"required"`
-	Amount        float64 `json:"amount" validate:"required,min=10000"`
-}
-
-type RequestWithdraw struct {
-	AccountNumber string  `json:"account_number" validate:"required"`
-	Amount        float64 `json:"amount" validate:"required,min=10000"`
-	PIN           string  `json:"pin" validate:"required,len=6"`
-}
-
 // Response Models
 
 type AccountResponse struct {
@@ -79,14 +56,6 @@ type BalanceResponse struct {
 	AccountNumber string  `json:"account_number"`
 	AccountName   string  `json:"account_name"`
 	Balance       float64 `json:"balance"`
-}
-
-type TransferResponse struct {
-	TransactionID     string    `json:"transaction_id"`
-	FromAccountNumber string    `json:"from_account_number"`
-	ToAccountNumber   string    `json:"to_account_number"`
-	Amount            float64   `json:"amount"`
-	TransactionDate   time.Time `json:"transaction_date"`
 }
 
 // RequestGetAccountByID untuk POST method
