@@ -45,7 +45,7 @@ func RoutesApi(e echo.Echo, usecaseSvc services.UsecaseService) {
 	accountSvc := accountService.NewAccountService(usecaseSvc)
 	accountGroup := public.Group("/account")
 
-	// Account
+	// Accounts
 	accountGroup.POST("/create", accountSvc.CreateAccount) // Buat akun baru
 	accountGroup.POST("/list", accountSvc.GetAccountList)  // List semua akun
 	accountGroup.POST("/get", accountSvc.GetAccountByID)   // Get akun by ID
