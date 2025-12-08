@@ -1,11 +1,13 @@
 package transactionService
 
 import (
+	"database/sql"
 	"net/http"
 	"sample/constans"
 	"sample/helpers"
 	"sample/models"
 	"sample/services"
+	"sample/utils"
 	"time"
 
 	"github.com/labstack/echo"
@@ -39,52 +41,48 @@ func (svc transactionService) Deposit(ctx echo.Context) error {
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	// Start transaction
-	tx, err := svc.Service.RepoDB.Begin()
+	balanceBefore := account.Balance
+	balanceAfter := balanceBefore + request.Amount
+
+	// DB Transaction
+	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
+		// Update balance menggunakan transaction
+		err = svc.Service.AccountRepo.UpdateBalance(request.AccountNumber, request.Amount)
+		if err != nil {
+			return err
+		}
+
+		// Record transaction (Credit)
+		transaction := models.Transaction{
+			AccountID:         account.ID,
+			AccountNumber:     account.AccountNumber,
+			AccountName:       account.AccountName,
+			TransactionType:   "C", // Credit (+)
+			Amount:            request.Amount,
+			TransactionTime:   time.Now(),
+			SourceNumber:      account.AccountNumber,
+			BeneficiaryNumber: account.AccountNumber,
+		}
+
+		_, err = svc.Service.TransactionRepo.AddTransaction(transaction)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+
 	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to start transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Update balance
-	err = svc.Service.AccountRepo.UpdateBalance(request.AccountNumber, request.Amount)
-	if err != nil {
-		tx.Rollback()
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Record transaction (Credit)
-	transaction := models.Transaction{
-		AccountID:         account.ID,
-		AccountNumber:     account.AccountNumber,
-		AccountName:       account.AccountName,
-		TransactionType:   "C", // Credit (+)
-		Amount:            request.Amount,
-		TransactionTime:   time.Now(),
-		SourceNumber:      account.AccountNumber,
-		BeneficiaryNumber: account.AccountNumber,
-	}
-
-	_, err = svc.Service.TransactionRepo.AddTransaction(transaction)
-	if err != nil {
-		tx.Rollback()
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to record transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to commit transaction", nil)
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Transaction failed: "+err.Error(), nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
 	response := map[string]interface{}{
 		"account_number":   account.AccountNumber,
 		"account_name":     account.AccountName,
-		"balance_before":   account.Balance,
+		"balance_before":   balanceBefore,
 		"amount":           request.Amount,
-		"balance_after":    account.Balance + request.Amount,
+		"balance_after":    balanceAfter,
 		"transaction_date": time.Now(),
 	}
 
@@ -120,52 +118,64 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Start transaction
-	tx, err := svc.Service.RepoDB.Begin()
+	balanceBefore := account.Balance
+	balanceAfter := balanceBefore - request.Amount
+
+	// DB Transaction
+	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
+		// Update balance (amount negatif untuk withdraw) menggunakan transaction
+		err = svc.Service.AccountRepo.UpdateBalance(request.AccountNumber, -request.Amount)
+		if err != nil {
+			return err
+		}
+
+		// Check if balance after is negative (additional safety)
+		if balanceAfter < 0 {
+			return &utils.TransactionError{
+				Code:    constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE,
+				Message: "Balance would be negative after withdrawal",
+			}
+		}
+
+		// Record transaction (Debit)
+		transaction := models.Transaction{
+			AccountID:         account.ID,
+			AccountNumber:     account.AccountNumber,
+			AccountName:       account.AccountName,
+			TransactionType:   "D", // Debit (-)
+			Amount:            request.Amount,
+			TransactionTime:   time.Now(),
+			SourceNumber:      account.AccountNumber,
+			BeneficiaryNumber: account.AccountNumber,
+		}
+
+		_, err = svc.Service.TransactionRepo.AddTransaction(transaction)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+
 	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to start transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
+		// Handle custom transaction errors
+		if txErr, ok := err.(*utils.TransactionError); ok {
+			if txErr.Code == constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE {
+				result = helpers.ResponseJSON(false, constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE, "Account balance below minimum", nil)
+				return ctx.JSON(http.StatusBadRequest, result)
+			}
+		}
 
-	// Update balance (amount negatif untuk withdraw)
-	err = svc.Service.AccountRepo.UpdateBalance(request.AccountNumber, -request.Amount)
-	if err != nil {
-		tx.Rollback()
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Record transaction (Debit)
-	transaction := models.Transaction{
-		AccountID:         account.ID,
-		AccountNumber:     account.AccountNumber,
-		AccountName:       account.AccountName,
-		TransactionType:   "D", // Debit (-)
-		Amount:            request.Amount,
-		TransactionTime:   time.Now(),
-		SourceNumber:      account.AccountNumber,
-		BeneficiaryNumber: account.AccountNumber,
-	}
-
-	_, err = svc.Service.TransactionRepo.AddTransaction(transaction)
-	if err != nil {
-		tx.Rollback()
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to record transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to commit transaction", nil)
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Transaction failed: "+err.Error(), nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
 	response := map[string]interface{}{
 		"account_number":   account.AccountNumber,
 		"account_name":     account.AccountName,
-		"balance_before":   account.Balance,
+		"balance_before":   balanceBefore,
 		"amount":           request.Amount,
-		"balance_after":    account.Balance - request.Amount,
+		"balance_after":    balanceAfter,
 		"transaction_date": time.Now(),
 	}
 
@@ -215,77 +225,81 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	if toAccount.Balance < 0 {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "error", nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Mulai transaction
-	tx, err := svc.Service.RepoDB.Begin()
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to start transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
+	fromBalanceBefore := fromAccount.Balance
+	fromBalanceAfter := fromBalanceBefore - request.Amount
+	// toBalanceBefore := toAccount.Balance
+	// toBalanceAfter := toBalanceBefore + request.Amount
 	transactionTime := time.Now()
 
-	// Kurangi saldo pengirim
-	err = svc.Service.AccountRepo.UpdateBalance(request.FromAccountNumber, -request.Amount)
+	// DB Transaction
+	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
+		// Kurangi saldo pengirim
+		err = svc.Service.AccountRepo.UpdateBalance(request.FromAccountNumber, -request.Amount)
+		if err != nil {
+			return err
+		}
+
+		// Check if sender's balance after is negative
+		if fromBalanceAfter < 0 {
+			return &utils.TransactionError{
+				Code:    constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE,
+				Message: "Sender balance would be negative after transfer",
+			}
+		}
+
+		// Record transaksi Debit untuk pengirim
+		debitTransaction := models.Transaction{
+			AccountID:         fromAccount.ID,
+			AccountNumber:     fromAccount.AccountNumber,
+			AccountName:       fromAccount.AccountName,
+			TransactionType:   "D", // Debit (-)
+			Amount:            request.Amount,
+			TransactionTime:   transactionTime,
+			SourceNumber:      fromAccount.AccountNumber,
+			BeneficiaryNumber: toAccount.AccountNumber,
+		}
+
+		_, err = svc.Service.TransactionRepo.AddTransaction(debitTransaction)
+		if err != nil {
+			return err
+		}
+
+		// Tambah saldo penerima
+		err = svc.Service.AccountRepo.UpdateBalance(request.ToAccountNumber, request.Amount)
+		if err != nil {
+			return err
+		}
+
+		// Record transaksi Credit untuk penerima
+		creditTransaction := models.Transaction{
+			AccountID:         toAccount.ID,
+			AccountNumber:     toAccount.AccountNumber,
+			AccountName:       toAccount.AccountName,
+			TransactionType:   "C", // Credit (+)
+			Amount:            request.Amount,
+			TransactionTime:   transactionTime,
+			SourceNumber:      fromAccount.AccountNumber,
+			BeneficiaryNumber: toAccount.AccountNumber,
+		}
+
+		_, err = svc.Service.TransactionRepo.AddTransaction(creditTransaction)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+
 	if err != nil {
-		tx.Rollback()
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to deduct from sender", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
+		// Handle custom transaction errors
+		if txErr, ok := err.(*utils.TransactionError); ok {
+			if txErr.Code == constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE {
+				result = helpers.ResponseJSON(false, constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE, "Account balance below minimum", nil)
+				return ctx.JSON(http.StatusBadRequest, result)
+			}
+		}
 
-	// Record transaksi Debit untuk pengirim
-	debitTransaction := models.Transaction{
-		AccountID:         fromAccount.ID,
-		AccountNumber:     fromAccount.AccountNumber,
-		AccountName:       fromAccount.AccountName,
-		TransactionType:   "D", // Debit (-)
-		Amount:            request.Amount,
-		TransactionTime:   transactionTime,
-		SourceNumber:      fromAccount.AccountNumber,
-		BeneficiaryNumber: toAccount.AccountNumber,
-	}
-
-	_, err = svc.Service.TransactionRepo.AddTransaction(debitTransaction)
-	if err != nil {
-		tx.Rollback()
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to record debit transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Tambah saldo penerima
-	err = svc.Service.AccountRepo.UpdateBalance(request.ToAccountNumber, request.Amount)
-	if err != nil {
-		tx.Rollback()
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to add to receiver", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Record transaksi Credit untuk penerima
-	creditTransaction := models.Transaction{
-		AccountID:         toAccount.ID,
-		AccountNumber:     toAccount.AccountNumber,
-		AccountName:       toAccount.AccountName,
-		TransactionType:   "C", // Credit (+)
-		Amount:            request.Amount,
-		TransactionTime:   transactionTime,
-		SourceNumber:      fromAccount.AccountNumber,
-		BeneficiaryNumber: toAccount.AccountNumber,
-	}
-
-	_, err = svc.Service.TransactionRepo.AddTransaction(creditTransaction)
-	if err != nil {
-		tx.Rollback()
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to record credit transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to commit transaction", nil)
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Transfer failed: "+err.Error(), nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 

@@ -163,7 +163,7 @@ func (svc accountService) GetAccountList(ctx echo.Context) error {
 		})
 	}
 
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, constans.EMPTY_VALUE, accountResponses)
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account retrivied successfully", accountResponses)
 	return ctx.JSON(http.StatusOK, result)
 }
 
@@ -194,7 +194,7 @@ func (svc accountService) GetAccountByID(ctx echo.Context) error {
 		CreatedAt:     account.CreatedAt,
 	}
 
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, constans.EMPTY_VALUE, response)
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account retrivied successfully", response)
 	return ctx.JSON(http.StatusOK, result)
 }
 
@@ -302,8 +302,6 @@ func (svc accountService) DeleteAccount(ctx echo.Context) error {
 	})
 	return ctx.JSON(http.StatusOK, result)
 }
-
-// Helper functions
 
 // hashPIN hash PIN menggunakan bcrypt
 func hashPIN(pin string) (string, error) {
