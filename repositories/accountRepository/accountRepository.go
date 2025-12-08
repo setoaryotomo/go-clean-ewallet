@@ -3,6 +3,7 @@ package accountRepository
 import (
 	"database/sql"
 	"errors"
+	"sample/helpers"
 	"sample/models"
 	"sample/repositories"
 	"time"
@@ -144,24 +145,42 @@ func (ctx accountRepository) UpdateAccount(account models.Account) (int, error) 
 	return ID, nil
 }
 
-// UpdateBalance update saldo akun
-func (ctx accountRepository) UpdateBalance(accountNumber string, amount float64) error {
-	var strQuery = `UPDATE account 
-					SET balance = balance + $2,
-					    updated_at = $3
-					WHERE account_number = $1 AND deleted_at IS NULL
-					RETURNING id`
+// IncrementDecrementLastBalance update saldo akun dengan operator (+/-) dan return last balance
+// debitCreditOperator: "+" untuk credit (tambah), "-" untuk debit (kurang)
+func (ctx accountRepository) IncrementDecrementLastBalance(accountID int, amount float64, debitCreditOperator string, updatedAt string, tx *sql.Tx) (lastBalance float64, err error) {
+	var args []interface{}
 
-	var ID int
-	err := ctx.RepoDB.DB.QueryRow(strQuery, accountNumber, amount, time.Now()).Scan(&ID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return errors.New("Account not found")
-		}
-		return err
+	// Validasi operator
+	if debitCreditOperator != "+" && debitCreditOperator != "-" {
+		return 0, errors.New("Invalid operator. Must be '+' or '-'")
 	}
 
-	return nil
+	query := `
+		UPDATE account SET balance = ROUND((balance ` + debitCreditOperator + ` $1)::numeric, 2),
+			updated_at = $2
+		WHERE id = $3 AND deleted_at IS NULL
+		RETURNING balance
+	`
+
+	// Replace placeholder untuk PostgreSQL
+	query = helpers.ReplaceSQL(query, "?")
+	args = append(args, amount, updatedAt, accountID)
+
+	// Execute dengan atau tanpa transaction
+	if tx != nil {
+		err = tx.QueryRow(query, args...).Scan(&lastBalance)
+	} else {
+		err = ctx.RepoDB.DB.QueryRow(query, args...).Scan(&lastBalance)
+	}
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, errors.New("Account not found")
+		}
+		return 0, err
+	}
+
+	return lastBalance, nil
 }
 
 // RemoveAccount soft delete akun
@@ -205,7 +224,7 @@ func (ctx accountRepository) GetAccountList() ([]models.Account, error) {
 	return accountDto(rows)
 }
 
-// GetAccountBalance mendapatkan saldo akun
+// GetAccountBalance mendapatkan saldo akun (kept for backward compatibility)
 func (ctx accountRepository) GetAccountBalance(accountNumber string) (float64, error) {
 	var balance float64
 
@@ -236,8 +255,6 @@ func (ctx accountRepository) VerifyPIN(accountNumber string, pin string) (bool, 
 		return false, err
 	}
 
-	// TODO: Implement proper password hashing verification (bcrypt)
-	// For now, simple comparison
 	return storedPIN == pin, nil
 }
 

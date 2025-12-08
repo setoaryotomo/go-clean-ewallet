@@ -1,6 +1,9 @@
 package repositories
 
-import "sample/models"
+import (
+	"database/sql"
+	"sample/models"
+)
 
 // ProductRepository
 type ProductRepository interface {
@@ -43,7 +46,8 @@ type AccountRepository interface {
 	IsAccountExistsByNumber(accountNumber string) (models.Account, bool)
 	AddAccount(account models.Account) (int, error)
 	UpdateAccount(account models.Account) (int, error)
-	UpdateBalance(accountNumber string, amount float64) error
+	// UpdateBalance diganti dengan IncrementDecrementLastBalance
+	IncrementDecrementLastBalance(accountID int, amount float64, debitCreditOperator string, updatedAt string, tx *sql.Tx) (lastBalance float64, err error)
 	RemoveAccount(id int) error
 	GetAccountList() ([]models.Account, error)
 	VerifyPIN(accountNumber string, pin string) (bool, error)
