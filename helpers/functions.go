@@ -1,8 +1,10 @@
 package helpers
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"sample/models"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func InArray(v interface{}, in interface{}) (ok bool, i int) {
@@ -89,4 +92,49 @@ func WeekStart(year, week int) time.Time {
 	t = t.AddDate(0, 0, (week-w)*7)
 
 	return t
+}
+
+// Helper functions
+func IsNumeric(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func HashPIN(pin string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(pin), 4)
+	return string(bytes), err
+}
+
+func CheckPINHash(pin, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pin))
+	return err == nil
+}
+
+func GenerateAccountNumber() string {
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+	timestamp := time.Now().UnixNano() / 1000000
+	random := rand.Intn(10000)
+	number := fmt.Sprintf("%d%04d", timestamp, random)
+
+	if len(number) > 10 {
+		number = number[len(number)-10:]
+	} else if len(number) < 10 {
+		number = fmt.Sprintf("%010s", number)
+	}
+
+	return number
+}
+
+func GenerateResetToken() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func Contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || Contains(s[1:], substr)))
 }

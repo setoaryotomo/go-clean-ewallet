@@ -179,6 +179,91 @@ func (ctx accountRepository) UpdatePIN(accountNumber string, newPIN string) erro
 	return nil
 }
 
+// ChangePINWithTx melakukan semua operasi ChangePIN dalam satu transaksi
+// yang mencakup: verifikasi PIN, increment failed attempts jika salah, update PIN jika benar
+func (ctx accountRepository) ChangePINWithTx(tx *sql.Tx, accountNumber, oldPIN, newPIN string, currentHashedPIN string) (int, error) {
+	// 1. Cek PIN lama
+	if !helpers.CheckPINHash(oldPIN, currentHashedPIN) {
+		// PIN salah: increment failed attempts
+		var failedAttempts int
+		query := `UPDATE account 
+				  SET failed_pin_attempts = failed_pin_attempts + 1,
+					  account_status = CASE 
+						  WHEN failed_pin_attempts + 1 >= 3 THEN 'BLOCKED_PIN'
+						  ELSE account_status 
+					  END,
+					  updated_at = $1
+				  WHERE account_number = $2 AND deleted_at IS NULL
+				  RETURNING failed_pin_attempts`
+
+		err := tx.QueryRow(query, time.Now(), accountNumber).Scan(&failedAttempts)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return 0, errors.New("Account not found")
+			}
+			return 0, err
+		}
+
+		return failedAttempts, errors.New("PIN_VERIFICATION_FAILED")
+	}
+
+	// 2. PIN benar: hash PIN baru
+	hashedPIN, err := helpers.HashPIN(newPIN)
+	if err != nil {
+		return 0, errors.New("Failed to hash new PIN")
+	}
+
+	// 3. Update PIN dan reset failed attempts
+	query := `UPDATE account 
+			  SET pin = $1, 
+			      failed_pin_attempts = 0,
+			      account_status = 'ACTIVE',
+			      updated_at = $2
+			  WHERE account_number = $3 AND deleted_at IS NULL`
+
+	result, err := tx.Exec(query, hashedPIN, time.Now(), accountNumber)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	if rowsAffected == 0 {
+		return 0, errors.New("Account not found")
+	}
+
+	return 0, nil
+}
+
+// UpdatePINWithTx update PIN dalam transaksi
+func (ctx accountRepository) UpdatePINWithTx(tx *sql.Tx, accountNumber string, newPIN string) error {
+	query := `UPDATE account 
+			  SET pin = $1, 
+			      failed_pin_attempts = 0,
+			      account_status = 'ACTIVE',
+			      updated_at = $2
+			  WHERE account_number = $3 AND deleted_at IS NULL`
+
+	result, err := tx.Exec(query, newPIN, time.Now(), accountNumber)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return errors.New("Account not found")
+	}
+
+	return nil
+}
+
 // IncrementFailedPINAttempts increment failed PIN attempts dan block jika >= 3
 func (ctx accountRepository) IncrementFailedPINAttempts(accountNumber string) (int, error) {
 	var failedAttempts int
@@ -194,6 +279,31 @@ func (ctx accountRepository) IncrementFailedPINAttempts(accountNumber string) (i
 			  RETURNING failed_pin_attempts`
 
 	err := ctx.RepoDB.DB.QueryRow(query, time.Now(), accountNumber).Scan(&failedAttempts)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, errors.New("Account not found")
+		}
+		return 0, err
+	}
+
+	return failedAttempts, nil
+}
+
+// IncrementFailedPINAttemptsWithTransaction increment failed PIN attempts dengan transaksi
+func (ctx accountRepository) IncrementFailedPINAttemptsWithTransaction(tx *sql.Tx, accountNumber string) (int, error) {
+	var failedAttempts int
+
+	query := `UPDATE account 
+			  SET failed_pin_attempts = failed_pin_attempts + 1,
+			      account_status = CASE 
+				      WHEN failed_pin_attempts + 1 >= 3 THEN 'BLOCKED_PIN'
+				      ELSE account_status 
+			      END,
+			      updated_at = $1
+			  WHERE account_number = $2 AND deleted_at IS NULL
+			  RETURNING failed_pin_attempts`
+
+	err := tx.QueryRow(query, time.Now(), accountNumber).Scan(&failedAttempts)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return 0, errors.New("Account not found")

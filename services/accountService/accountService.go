@@ -1,19 +1,19 @@
 package accountService
 
 import (
-	// "crypto/rand"
-	"encoding/hex"
+	"database/sql"
 	"fmt"
-	"math/rand"
 	"net/http"
+	"sample/config"
 	"sample/constans"
 	"sample/helpers"
 	"sample/models"
 	"sample/services"
+	"sample/utils"
 	"time"
 
+	"github.com/gomodule/redigo/redis"
 	"github.com/labstack/echo"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type accountService struct {
@@ -42,12 +42,12 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	if !isNumeric(request.PIN) {
+	if !helpers.IsNumeric(request.PIN) {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "PIN harus berupa angka", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	hashedPIN, err := hashPIN(request.PIN)
+	hashedPIN, err := helpers.HashPIN(request.PIN)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to hash PIN", nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
@@ -58,7 +58,7 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	accountNumber := generateAccountNumber()
+	accountNumber := helpers.GenerateAccountNumber()
 
 	maxAttempts := 5
 	for attempts := 0; attempts < maxAttempts; attempts++ {
@@ -66,7 +66,7 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		if !exists {
 			break
 		}
-		accountNumber = generateAccountNumber()
+		accountNumber = helpers.GenerateAccountNumber()
 
 		if attempts == maxAttempts-1 {
 			result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to generate unique account number", nil)
@@ -114,7 +114,7 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// ChangePIN ubah PIN akun
+// ChangePIN ubah PIN akun dengan satu DBTransaction
 func (svc accountService) ChangePIN(ctx echo.Context) error {
 	var result models.Response
 
@@ -125,7 +125,7 @@ func (svc accountService) ChangePIN(ctx echo.Context) error {
 	}
 
 	// Validasi format PIN baru
-	if !isNumeric(request.NewPIN) {
+	if !helpers.IsNumeric(request.NewPIN) {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "PIN harus berupa angka", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
@@ -136,7 +136,7 @@ func (svc accountService) ChangePIN(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Cek akun exists
+	// Cek akun exists dan ambil current hashed PIN
 	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
@@ -149,47 +149,52 @@ func (svc accountService) ChangePIN(ctx echo.Context) error {
 		return ctx.JSON(http.StatusForbidden, result)
 	}
 
-	// Verifikasi PIN lama
-	if !checkPINHash(request.OldPIN, account.PIN) {
-		// Increment failed attempts
-		failedAttempts, _ := svc.Service.AccountRepo.IncrementFailedPINAttempts(request.AccountNumber)
+	// Gunakan satu DBTransaction untuk semua operasi ChangePIN
+	var failedAttempts int
+	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
+		// Panggil repository function yang menangani semua operasi dalam satu transaksi
+		failedAttempts, err = svc.Service.AccountRepo.ChangePINWithTx(
+			tx,
+			request.AccountNumber,
+			request.OldPIN,
+			request.NewPIN,
+			account.PIN,
+		)
+		return err
+	})
 
-		remainingAttempts := 3 - failedAttempts
-		if remainingAttempts <= 0 {
-			result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account blocked due to multiple failed PIN attempts", nil)
-			return ctx.JSON(http.StatusForbidden, result)
+	if err != nil {
+		// Cek jika error adalah PIN verification failed
+		if err.Error() == "PIN_VERIFICATION_FAILED" {
+			remainingAttempts := 3 - failedAttempts
+
+			if remainingAttempts <= 0 {
+				result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE,
+					"Account blocked due to multiple failed PIN attempts", nil)
+				return ctx.JSON(http.StatusForbidden, result)
+			}
+
+			result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE,
+				fmt.Sprintf("Invalid old PIN. %d attempt(s) remaining", remainingAttempts), nil)
+			return ctx.JSON(http.StatusUnauthorized, result)
 		}
 
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE,
-			fmt.Sprintf("Invalid old PIN. %d attempt(s) remaining", remainingAttempts), nil)
-		return ctx.JSON(http.StatusUnauthorized, result)
-	}
-
-	// Hash PIN baru
-	hashedPIN, err := hashPIN(request.NewPIN)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to hash new PIN", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Update PIN
-	err = svc.Service.AccountRepo.UpdatePIN(request.AccountNumber, hashedPIN)
-	if err != nil {
+		// Error lainnya
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
+	// Sukses
 	response := models.ChangePINResponse{
 		AccountNumber: request.AccountNumber,
-		// Message:       "PIN changed successfully",
-		ChangedAt: time.Now(),
+		ChangedAt:     time.Now(),
 	}
 
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "PIN changed successfully", response)
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// ForgotPIN untuk reset PIN (simulasi dengan token)
+// ForgotPIN untuk reset PIN menggunakan Redis
 func (svc accountService) ForgotPIN(ctx echo.Context) error {
 	var result models.Response
 
@@ -213,19 +218,33 @@ func (svc accountService) ForgotPIN(ctx echo.Context) error {
 	}
 
 	// Generate reset token
-	resetToken := generateResetToken()
+	resetToken := helpers.GenerateResetToken()
+
+	// Connect to Redis
+	redisConn := config.ConnectRedis()
+	defer redisConn.Close()
+
+	// Simpan token ke Redis dengan expiry 5 menit (300 detik)
+	// Key format: reset_pin:{account_number}
+	redisKey := fmt.Sprintf("reset_pin:%s", request.AccountNumber)
+
+	// Gunakan SETEX untuk set dengan expiry sekaligus
+	_, err = redisConn.Do("SETEX", redisKey, 300, resetToken)
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to store reset token", nil)
+		return ctx.JSON(http.StatusInternalServerError, result)
+	}
 
 	response := models.ForgotPINResponse{
 		AccountNumber: request.AccountNumber,
-		// Message:       "Reset token generated. Please use this token to reset your PIN",
-		ResetToken: resetToken,
+		ResetToken:    resetToken,
 	}
 
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Reset token generated successfully", response)
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Reset token generated successfully. Token valid for 5 minutes", response)
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// ResetPIN reset PIN dengan token
+// ResetPIN reset PIN dengan token dari Redis dengan DBTransaction
 func (svc accountService) ResetPIN(ctx echo.Context) error {
 	var result models.Response
 
@@ -236,14 +255,8 @@ func (svc accountService) ResetPIN(ctx echo.Context) error {
 	}
 
 	// Validasi format PIN
-	if !isNumeric(request.NewPIN) {
+	if !helpers.IsNumeric(request.NewPIN) {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "PIN harus berupa angka", nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Validasi reset token
-	if len(request.ResetToken) < 32 {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid reset token", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
@@ -254,24 +267,56 @@ func (svc accountService) ResetPIN(ctx echo.Context) error {
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
+	// Connect to Redis
+	redisConn := config.ConnectRedis()
+	defer redisConn.Close()
+
+	// Ambil token dari Redis
+	redisKey := fmt.Sprintf("reset_pin:%s", request.AccountNumber)
+	storedToken, err := redis.String(redisConn.Do("GET", redisKey))
+
+	if err != nil {
+		if err == redis.ErrNil {
+			result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Reset token expired or not found. Please request a new token", nil)
+			return ctx.JSON(http.StatusBadRequest, result)
+		}
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to verify reset token", nil)
+		return ctx.JSON(http.StatusInternalServerError, result)
+	}
+
+	// Validasi token
+	if storedToken != request.ResetToken {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid reset token", nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
 	// Hash PIN baru
-	hashedPIN, err := hashPIN(request.NewPIN)
+	hashedPIN, err := helpers.HashPIN(request.NewPIN)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to hash new PIN", nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
-	// Update PIN dan reset failed attempts
-	err = svc.Service.AccountRepo.UpdatePIN(request.AccountNumber, hashedPIN)
+	// Gunakan DBTransaction untuk update PIN
+	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
+		return svc.Service.AccountRepo.UpdatePINWithTx(tx, request.AccountNumber, hashedPIN)
+	})
+
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
+	// Hapus token dari Redis setelah berhasil digunakan
+	_, err = redisConn.Do("DEL", redisKey)
+	if err != nil {
+		// Log error tapi tidak perlu gagalkan request karena PIN sudah ter-reset
+		helpers.LOG("Failed to delete reset token from Redis", err, false)
+	}
+
 	response := map[string]interface{}{
 		"account_number": request.AccountNumber,
-		// "message":        "PIN reset successfully",
-		"reset_at": time.Now(),
+		"reset_at":       time.Now(),
 	}
 
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "PIN reset successfully", response)
@@ -402,45 +447,4 @@ func (svc accountService) DeleteAccount(ctx echo.Context) error {
 		"account_name":       account.AccountName,
 	})
 	return ctx.JSON(http.StatusOK, result)
-}
-
-// Helper functions
-func isNumeric(s string) bool {
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func hashPIN(pin string) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(pin), 4)
-	return string(bytes), err
-}
-
-func checkPINHash(pin, hash string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pin))
-	return err == nil
-}
-
-func generateAccountNumber() string {
-	rand.New(rand.NewSource(time.Now().UnixNano()))
-	timestamp := time.Now().UnixNano() / 1000000
-	random := rand.Intn(10000)
-	number := fmt.Sprintf("%d%04d", timestamp, random)
-
-	if len(number) > 10 {
-		number = number[len(number)-10:]
-	} else if len(number) < 10 {
-		number = fmt.Sprintf("%010s", number)
-	}
-
-	return number
-}
-
-func generateResetToken() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
 }

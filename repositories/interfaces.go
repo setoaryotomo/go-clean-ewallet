@@ -47,6 +47,8 @@ type AccountRepository interface {
 	AddAccount(account models.Account) (int, error)
 	UpdateAccount(account models.Account) (int, error)
 	UpdatePIN(accountNumber string, newPIN string) error
+	UpdatePINWithTx(tx *sql.Tx, accountNumber string, newPIN string) error
+	ChangePINWithTx(tx *sql.Tx, accountNumber, oldPIN, newPIN string, currentHashedPIN string) (int, error)
 	IncrementFailedPINAttempts(accountNumber string) (int, error)
 	ResetFailedPINAttempts(accountNumber string) error
 	IncrementDecrementLastBalance(accountID int, amount float64, debitCreditOperator string, updatedAt string, tx *sql.Tx) (lastBalance float64, err error)
