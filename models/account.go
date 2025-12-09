@@ -43,15 +43,16 @@ type RequestChangePIN struct {
 	NewPIN        string `json:"new_pin" validate:"required,len=6"`
 }
 
+// UPDATED: Hanya membutuhkan account_number
 type RequestForgotPIN struct {
 	AccountNumber string `json:"account_number" validate:"required"`
-	AccountName   string `json:"account_name" validate:"required"`
 }
 
+// UPDATED: Membutuhkan reset_token, new_pin, dan confirm_new_pin
 type RequestResetPIN struct {
-	AccountNumber string `json:"account_number" validate:"required"`
+	ResetToken    string `json:"reset_token" validate:"required"`
 	NewPIN        string `json:"new_pin" validate:"required,len=6"`
-	ResetToken    string `json:"reset_token" validate:"required"` // Simulasi token
+	ConfirmNewPIN string `json:"confirm_new_pin" validate:"required,len=6"`
 }
 
 // Response Models
@@ -87,13 +88,17 @@ type AccountDetailResponse struct {
 }
 
 type ChangePINResponse struct {
-	AccountNumber string `json:"account_number"`
-	// Message       string    `json:"message"`
-	ChangedAt time.Time `json:"changed_at"`
+	AccountNumber string    `json:"account_number"`
+	ChangedAt     time.Time `json:"changed_at"`
 }
 
 type ForgotPINResponse struct {
-	AccountNumber string `json:"account_number"`
-	// Message       string `json:"message"`
-	ResetToken string `json:"reset_token"` // Simulasi token
+	AccountNumber string    `json:"account_number"`
+	ResetToken    string    `json:"reset_token"`
+	ExpiresAt     time.Time `json:"expires_at"` // Waktu expiry
+}
+
+type ResetPINResponse struct {
+	AccountNumber string    `json:"account_number"`
+	ResetAt       time.Time `json:"reset_at"`
 }

@@ -51,10 +51,13 @@ func (cv *CustomValidator) Validate(i interface{}) error {
 func main() {
 	if err := config.OpenConnection(); err != nil {
 		log.Printf("error open connection: %v\n", err)
-		panic(fmt.Sprintf("Open Connection Faild: %s", err.Error()))
-
+		panic(fmt.Sprintf("Open Connection Failed: %s", err.Error()))
 	}
 	defer config.CloseConnectionDB()
+
+	// Initialize Redis Pool
+	config.InitRedisPool()
+	defer config.CloseRedisPool()
 
 	// Mongo DB connection using database default
 	mongoDB := config.ConnectMongo(ctx)

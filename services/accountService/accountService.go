@@ -12,7 +12,6 @@ import (
 	"sample/utils"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
 	"github.com/labstack/echo"
 )
 
@@ -194,7 +193,7 @@ func (svc accountService) ChangePIN(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// ForgotPIN untuk reset PIN menggunakan Redis
+// ForgotPIN Inquiry
 func (svc accountService) ForgotPIN(ctx echo.Context) error {
 	var result models.Response
 
@@ -204,47 +203,36 @@ func (svc accountService) ForgotPIN(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Verifikasi account number dan account name
 	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	// Verifikasi account name
-	if account.AccountName != request.AccountName {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account name does not match", nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Generate reset token
 	resetToken := helpers.GenerateResetToken()
 
-	// Connect to Redis
-	redisConn := config.ConnectRedis()
-	defer redisConn.Close()
-
-	// Simpan token ke Redis dengan expiry 5 menit (300 detik)
-	// Key format: reset_pin:{account_number}
-	redisKey := fmt.Sprintf("reset_pin:%s", request.AccountNumber)
-
-	// Gunakan SETEX untuk set dengan expiry sekaligus
-	_, err = redisConn.Do("SETEX", redisKey, 300, resetToken)
+	//set expiry time
+	expiryTime := time.Now().Add(5 * time.Minute)
+	err = config.SetResetToken(resetToken, account.AccountNumber, expiryTime)
 	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to store reset token", nil)
+		helpers.LOG("Failed to store reset token", err, false)
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE,
+			"Failed to generate reset token. Please try again", nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
 	response := models.ForgotPINResponse{
-		AccountNumber: request.AccountNumber,
+		AccountNumber: account.AccountNumber,
 		ResetToken:    resetToken,
+		ExpiresAt:     expiryTime,
 	}
 
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Reset token generated successfully. Token valid for 5 minutes", response)
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE,
+		"Reset token generated successfully. Please use this token within 5 minutes", response)
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// ResetPIN reset PIN dengan token dari Redis dengan DBTransaction
+// ResetPIN reset PIN dengan token dari Redis (Forgot PIN Confirm)
 func (svc accountService) ResetPIN(ctx echo.Context) error {
 	var result models.Response
 
@@ -254,69 +242,67 @@ func (svc accountService) ResetPIN(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Validasi format PIN
+	// Validasi format PIN baru
 	if !helpers.IsNumeric(request.NewPIN) {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "PIN harus berupa angka", nil)
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "PIN must be numeric", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Cek akun exists
-	_, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
+	// Validasi PIN confirmation
+	if request.NewPIN != request.ConfirmNewPIN {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "New PIN and Confirm PIN do not match", nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Dapatkan account_number dari token
+	accountNumber, err := config.GetAccountNumberByToken(request.ResetToken)
+	if err != nil {
+		if helpers.Contains(err.Error(), "expired or not found") {
+			result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE,
+				"Reset token has expired or is invalid. Please request a new token", nil)
+			return ctx.JSON(http.StatusBadRequest, result)
+		}
+		helpers.LOG("Failed to verify reset token", err, false)
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE,
+			"Failed to verify reset token", nil)
+		return ctx.JSON(http.StatusInternalServerError, result)
+	}
+
+	// Verifikasi account masih exists
+	account, err := svc.Service.AccountRepo.FindAccountByNumber(accountNumber)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	// Connect to Redis
-	redisConn := config.ConnectRedis()
-	defer redisConn.Close()
-
-	// Ambil token dari Redis
-	redisKey := fmt.Sprintf("reset_pin:%s", request.AccountNumber)
-	storedToken, err := redis.String(redisConn.Do("GET", redisKey))
-
-	if err != nil {
-		if err == redis.ErrNil {
-			result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Reset token expired or not found. Please request a new token", nil)
-			return ctx.JSON(http.StatusBadRequest, result)
-		}
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to verify reset token", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	// Validasi token
-	if storedToken != request.ResetToken {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid reset token", nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
 	// Hash PIN baru
 	hashedPIN, err := helpers.HashPIN(request.NewPIN)
 	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to hash new PIN", nil)
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to process new PIN", nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
-	// Gunakan DBTransaction untuk update PIN
+	// Update PIN menggunakan transaction
 	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
-		return svc.Service.AccountRepo.UpdatePINWithTx(tx, request.AccountNumber, hashedPIN)
+		return svc.Service.AccountRepo.UpdatePINWithTx(tx, accountNumber, hashedPIN)
 	})
 
 	if err != nil {
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE,
+			"Failed to reset PIN: "+err.Error(), nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
 	// Hapus token dari Redis setelah berhasil digunakan
-	_, err = redisConn.Do("DEL", redisKey)
-	if err != nil {
-		// Log error tapi tidak perlu gagalkan request karena PIN sudah ter-reset
+	if err := config.DeleteResetToken(request.ResetToken); err != nil {
 		helpers.LOG("Failed to delete reset token from Redis", err, false)
+		// Tidak perlu gagalkan request, token akan expire sendiri
 	}
 
-	response := map[string]interface{}{
-		"account_number": request.AccountNumber,
-		"reset_at":       time.Now(),
+	response := models.ResetPINResponse{
+		AccountNumber: account.AccountNumber,
+		ResetAt:       time.Now(),
+		// Message:       "PIN has been reset successfully. You can now use your new PIN",
 	}
 
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "PIN reset successfully", response)

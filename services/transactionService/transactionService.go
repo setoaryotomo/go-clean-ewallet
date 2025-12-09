@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/labstack/echo"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type transactionService struct {
@@ -121,7 +120,7 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 	}
 
 	// Verify PIN with failed attempts tracking
-	if !checkPINHash(request.PIN, account.PIN) {
+	if !helpers.CheckPINHash(request.PIN, account.PIN) {
 		failedAttempts, _ := svc.Service.AccountRepo.IncrementFailedPINAttempts(request.AccountNumber)
 
 		remainingAttempts := 3 - failedAttempts
@@ -241,7 +240,7 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 	}
 
 	// Verify PIN with failed attempts tracking
-	if !checkPINHash(request.PIN, fromAccount.PIN) {
+	if !helpers.CheckPINHash(request.PIN, fromAccount.PIN) {
 		failedAttempts, _ := svc.Service.AccountRepo.IncrementFailedPINAttempts(request.FromAccountNumber)
 
 		remainingAttempts := 3 - failedAttempts
@@ -462,7 +461,7 @@ func (svc transactionService) GetTransactionDetail(ctx echo.Context) error {
 }
 
 // checkPINHash verifikasi PIN
-func checkPINHash(pin, hash string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pin))
-	return err == nil
-}
+// func checkPINHash(pin, hash string) bool {
+// 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pin))
+// 	return err == nil
+// }
