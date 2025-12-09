@@ -46,7 +46,9 @@ type AccountRepository interface {
 	IsAccountExistsByNumber(accountNumber string) (models.Account, bool)
 	AddAccount(account models.Account) (int, error)
 	UpdateAccount(account models.Account) (int, error)
-	// UpdateBalance diganti dengan IncrementDecrementLastBalance
+	UpdatePIN(accountNumber string, newPIN string) error
+	IncrementFailedPINAttempts(accountNumber string) (int, error)
+	ResetFailedPINAttempts(accountNumber string) error
 	IncrementDecrementLastBalance(accountID int, amount float64, debitCreditOperator string, updatedAt string, tx *sql.Tx) (lastBalance float64, err error)
 	RemoveAccount(id int) error
 	GetAccountList() ([]models.Account, error)
@@ -56,4 +58,6 @@ type AccountRepository interface {
 // TransactionRepository
 type TransactionRepository interface {
 	AddTransaction(transaction models.Transaction) (int, error)
+	FindTransactionById(id int) (models.Transaction, error)
+	GetTransactionHistory(accountNumber string, startDate, endDate string, limit, page int) ([]models.Transaction, int, error)
 }

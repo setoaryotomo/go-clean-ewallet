@@ -2,12 +2,14 @@ package transactionService
 
 import (
 	"database/sql"
+	"math"
 	"net/http"
 	"sample/constans"
 	"sample/helpers"
 	"sample/models"
 	"sample/services"
 	"sample/utils"
+	"strconv"
 	"time"
 
 	"github.com/labstack/echo"
@@ -34,7 +36,6 @@ func (svc transactionService) Deposit(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Cek akun exists
 	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
@@ -47,13 +48,11 @@ func (svc transactionService) Deposit(ctx echo.Context) error {
 
 	var balanceAfter float64
 
-	// DB Transaction menggunakan utils.DBTransaction
 	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
-		// Update balance menggunakan IncrementDecrementLastBalance dengan operator "+"
 		lastBalance, err := svc.Service.AccountRepo.IncrementDecrementLastBalance(
 			account.ID,
 			request.Amount,
-			"+", // Credit operator
+			"+",
 			updatedAt,
 			tx,
 		)
@@ -62,12 +61,11 @@ func (svc transactionService) Deposit(ctx echo.Context) error {
 		}
 		balanceAfter = lastBalance
 
-		// Record transaction (Credit)
 		transaction := models.Transaction{
 			AccountID:         account.ID,
 			AccountNumber:     account.AccountNumber,
 			AccountName:       account.AccountName,
-			TransactionType:   "C", // Credit (+)
+			TransactionType:   "C",
 			Amount:            request.Amount,
 			TransactionTime:   transactionTime,
 			SourceNumber:      account.AccountNumber,
@@ -110,19 +108,36 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Verifikasi PIN
 	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
+	// Check account status
+	if account.AccountStatus == "BLOCKED_PIN" {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account is blocked. Please reset your PIN", nil)
+		return ctx.JSON(http.StatusForbidden, result)
+	}
+
+	// Verify PIN with failed attempts tracking
 	if !checkPINHash(request.PIN, account.PIN) {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid PIN", nil)
+		failedAttempts, _ := svc.Service.AccountRepo.IncrementFailedPINAttempts(request.AccountNumber)
+
+		remainingAttempts := 3 - failedAttempts
+		if remainingAttempts <= 0 {
+			result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account blocked due to multiple failed PIN attempts", nil)
+			return ctx.JSON(http.StatusForbidden, result)
+		}
+
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE,
+			"Invalid PIN. "+strconv.Itoa(remainingAttempts)+" attempt(s) remaining", nil)
 		return ctx.JSON(http.StatusUnauthorized, result)
 	}
 
-	// Cek saldo cukup
+	// Reset failed attempts on successful PIN
+	svc.Service.AccountRepo.ResetFailedPINAttempts(request.AccountNumber)
+
 	if account.Balance < request.Amount {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Insufficient balance", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
@@ -134,13 +149,11 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 
 	var balanceAfter float64
 
-	// DB Transaction menggunakan utils.DBTransaction
 	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
-		// Update balance menggunakan IncrementDecrementLastBalance dengan operator "-"
 		lastBalance, err := svc.Service.AccountRepo.IncrementDecrementLastBalance(
 			account.ID,
 			request.Amount,
-			"-", // Debit operator
+			"-",
 			updatedAt,
 			tx,
 		)
@@ -149,7 +162,6 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 		}
 		balanceAfter = lastBalance
 
-		// Check if balance after is negative
 		if balanceAfter < 0 {
 			return &utils.TransactionError{
 				Code:    constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE,
@@ -157,12 +169,11 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 			}
 		}
 
-		// Record transaction (Debit)
 		transaction := models.Transaction{
 			AccountID:         account.ID,
 			AccountNumber:     account.AccountNumber,
 			AccountName:       account.AccountName,
-			TransactionType:   "D", // Debit (-)
+			TransactionType:   "D",
 			Amount:            request.Amount,
 			TransactionTime:   transactionTime,
 			SourceNumber:      account.AccountNumber,
@@ -178,7 +189,6 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 	})
 
 	if err != nil {
-		// Handle custom transaction errors
 		if txErr, ok := err.(*utils.TransactionError); ok {
 			if txErr.Code == constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE {
 				result = helpers.ResponseJSON(false, constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE, txErr.Message, nil)
@@ -213,32 +223,46 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Validasi tidak bisa transfer ke akun sendiri
 	if request.FromAccountNumber == request.ToAccountNumber {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Cannot transfer to same account", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Get akun pengirim
 	fromAccount, err := svc.Service.AccountRepo.FindAccountByNumber(request.FromAccountNumber)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Source account not found", nil)
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	// Verifikasi PIN
+	// Check account status
+	if fromAccount.AccountStatus == "BLOCKED_PIN" {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account is blocked. Please reset your PIN", nil)
+		return ctx.JSON(http.StatusForbidden, result)
+	}
+
+	// Verify PIN with failed attempts tracking
 	if !checkPINHash(request.PIN, fromAccount.PIN) {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid PIN", nil)
+		failedAttempts, _ := svc.Service.AccountRepo.IncrementFailedPINAttempts(request.FromAccountNumber)
+
+		remainingAttempts := 3 - failedAttempts
+		if remainingAttempts <= 0 {
+			result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account blocked due to multiple failed PIN attempts", nil)
+			return ctx.JSON(http.StatusForbidden, result)
+		}
+
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE,
+			"Invalid PIN. "+strconv.Itoa(remainingAttempts)+" attempt(s) remaining", nil)
 		return ctx.JSON(http.StatusUnauthorized, result)
 	}
 
-	// Cek saldo cukup
+	// Reset failed attempts on successful PIN
+	svc.Service.AccountRepo.ResetFailedPINAttempts(request.FromAccountNumber)
+
 	if fromAccount.Balance < request.Amount {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Insufficient balance", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Get akun penerima
 	toAccount, err := svc.Service.AccountRepo.FindAccountByNumber(request.ToAccountNumber)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Beneficiary account not found", nil)
@@ -252,13 +276,11 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 
 	var fromBalanceAfter, toBalanceAfter float64
 
-	// DB Transaction menggunakan utils.DBTransaction
 	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
-		// Kurangi saldo pengirim dengan operator "-"
 		lastBalance, err := svc.Service.AccountRepo.IncrementDecrementLastBalance(
 			fromAccount.ID,
 			request.Amount,
-			"-", // Debit operator
+			"-",
 			updatedAt,
 			tx,
 		)
@@ -267,7 +289,6 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 		}
 		fromBalanceAfter = lastBalance
 
-		// Check if sender's balance after is negative
 		if fromBalanceAfter < 0 {
 			return &utils.TransactionError{
 				Code:    constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE,
@@ -275,12 +296,11 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 			}
 		}
 
-		// Record transaksi Debit untuk pengirim
 		debitTransaction := models.Transaction{
 			AccountID:         fromAccount.ID,
 			AccountNumber:     fromAccount.AccountNumber,
 			AccountName:       fromAccount.AccountName,
-			TransactionType:   "D", // Debit (-)
+			TransactionType:   "D",
 			Amount:            request.Amount,
 			TransactionTime:   transactionTime,
 			SourceNumber:      fromAccount.AccountNumber,
@@ -292,11 +312,10 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 			return err
 		}
 
-		// Tambah saldo penerima dengan operator "+"
 		lastBalance, err = svc.Service.AccountRepo.IncrementDecrementLastBalance(
 			toAccount.ID,
 			request.Amount,
-			"+", // Credit operator
+			"+",
 			updatedAt,
 			tx,
 		)
@@ -305,12 +324,11 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 		}
 		toBalanceAfter = lastBalance
 
-		// Record transaksi Credit untuk penerima
 		creditTransaction := models.Transaction{
 			AccountID:         toAccount.ID,
 			AccountNumber:     toAccount.AccountNumber,
 			AccountName:       toAccount.AccountName,
-			TransactionType:   "C", // Credit (+)
+			TransactionType:   "C",
 			Amount:            request.Amount,
 			TransactionTime:   transactionTime,
 			SourceNumber:      fromAccount.AccountNumber,
@@ -326,7 +344,6 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 	})
 
 	if err != nil {
-		// Handle custom transaction errors
 		if txErr, ok := err.(*utils.TransactionError); ok {
 			if txErr.Code == constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE {
 				result = helpers.ResponseJSON(false, constans.ACCOUNT_BALANCE_BELOW_MINIMUM_CODE, txErr.Message, nil)
@@ -356,6 +373,91 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 	}
 
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Transfer successful", response)
+	return ctx.JSON(http.StatusOK, result)
+}
+
+// GetTransactionHistory mendapatkan riwayat transaksi (versi sederhana)
+func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
+	var result models.Response
+
+	request := new(models.RequestTransactionHistory)
+	if err := helpers.BindValidateStruct(ctx, request); err != nil {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Verify account exists
+	_, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
+		return ctx.JSON(http.StatusNotFound, result)
+	}
+
+	// Set default values
+	if request.Limit <= 0 {
+		request.Limit = 10
+	}
+	if request.Page <= 0 {
+		request.Page = 1
+	}
+
+	// Get transaction history
+	transactions, totalRecords, err := svc.Service.TransactionRepo.GetTransactionHistory(
+		request.AccountNumber,
+		request.StartDate,
+		request.EndDate,
+		request.Limit,
+		request.Page,
+	)
+
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
+		return ctx.JSON(http.StatusInternalServerError, result)
+	}
+
+	// Convert to simple response format
+	var transactionResponses []models.TransactionSimpleResponse
+	for _, tx := range transactions {
+		transactionResponses = append(transactionResponses, tx.ToSimpleResponse())
+	}
+
+	// Calculate pagination
+	totalPages := int(math.Ceil(float64(totalRecords) / float64(request.Limit)))
+
+	response := models.TransactionHistorySimpleResponse{
+		Transactions: transactionResponses,
+		Pagination: models.PaginationMeta{
+			CurrentPage:  request.Page,
+			PerPage:      request.Limit,
+			TotalRecords: totalRecords,
+			TotalPages:   totalPages,
+		},
+	}
+
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Transaction history retrieved successfully", response)
+	return ctx.JSON(http.StatusOK, result)
+}
+
+// GetTransactionDetail mendapatkan detail transaksi
+func (svc transactionService) GetTransactionDetail(ctx echo.Context) error {
+	var result models.Response
+
+	request := new(models.RequestTransactionDetail)
+	if err := helpers.BindValidateStruct(ctx, request); err != nil {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Get transaction by ID
+	transaction, err := svc.Service.TransactionRepo.FindTransactionById(request.TransactionID)
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Transaction not found", nil)
+		return ctx.JSON(http.StatusNotFound, result)
+	}
+
+	response := transaction.ToDetailResponse()
+
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Transaction detail retrieved successfully", response)
 	return ctx.JSON(http.StatusOK, result)
 }
 

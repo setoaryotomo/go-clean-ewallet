@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-var defineColumn = `id, account_number, balance, pin, account_name, created_at, updated_at`
+var defineColumn = `id, account_number, balance, pin, account_name, account_status, failed_pin_attempts, created_at, updated_at`
 
 type accountRepository struct {
 	RepoDB repositories.Repository
@@ -34,6 +34,8 @@ func (ctx accountRepository) FindAccountById(id int) (models.Account, error) {
 		&account.Balance,
 		&account.PIN,
 		&account.AccountName,
+		&account.AccountStatus,
+		&account.FailedPINAttempts,
 		&account.CreatedAt,
 		&account.UpdatedAt,
 	)
@@ -60,6 +62,8 @@ func (ctx accountRepository) FindAccountByNumber(accountNumber string) (models.A
 		&account.Balance,
 		&account.PIN,
 		&account.AccountName,
+		&account.AccountStatus,
+		&account.FailedPINAttempts,
 		&account.CreatedAt,
 		&account.UpdatedAt,
 	)
@@ -86,6 +90,8 @@ func (ctx accountRepository) IsAccountExistsByNumber(accountNumber string) (mode
 		&account.Balance,
 		&account.PIN,
 		&account.AccountName,
+		&account.AccountStatus,
+		&account.FailedPINAttempts,
 		&account.CreatedAt,
 		&account.UpdatedAt,
 	)
@@ -102,9 +108,9 @@ func (ctx accountRepository) AddAccount(account models.Account) (int, error) {
 	var ID int
 
 	query := `INSERT INTO account (
-				account_number, balance, pin, account_name, created_at, updated_at
+				account_number, balance, pin, account_name, account_status, failed_pin_attempts, created_at, updated_at
 		) VALUES (
-				$1, $2, $3, $4, $5, $6
+				$1, $2, $3, $4, $5, $6, $7, $8
 		) RETURNING id`
 
 	now := time.Now()
@@ -114,6 +120,8 @@ func (ctx accountRepository) AddAccount(account models.Account) (int, error) {
 		account.Balance,
 		account.PIN,
 		account.AccountName,
+		"ACTIVE", // Default status
+		0,        // Default failed attempts
 		now,
 		now,
 	).Scan(&ID)
@@ -145,12 +153,86 @@ func (ctx accountRepository) UpdateAccount(account models.Account) (int, error) 
 	return ID, nil
 }
 
+// UpdatePIN update PIN akun
+func (ctx accountRepository) UpdatePIN(accountNumber string, newPIN string) error {
+	query := `UPDATE account 
+			  SET pin = $1, 
+			      failed_pin_attempts = 0,
+			      account_status = 'ACTIVE',
+			      updated_at = $2
+			  WHERE account_number = $3 AND deleted_at IS NULL`
+
+	result, err := ctx.RepoDB.DB.Exec(query, newPIN, time.Now(), accountNumber)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return errors.New("Account not found")
+	}
+
+	return nil
+}
+
+// IncrementFailedPINAttempts increment failed PIN attempts dan block jika >= 3
+func (ctx accountRepository) IncrementFailedPINAttempts(accountNumber string) (int, error) {
+	var failedAttempts int
+
+	query := `UPDATE account 
+			  SET failed_pin_attempts = failed_pin_attempts + 1,
+			      account_status = CASE 
+				      WHEN failed_pin_attempts + 1 >= 3 THEN 'BLOCKED_PIN'
+				      ELSE account_status 
+			      END,
+			      updated_at = $1
+			  WHERE account_number = $2 AND deleted_at IS NULL
+			  RETURNING failed_pin_attempts`
+
+	err := ctx.RepoDB.DB.QueryRow(query, time.Now(), accountNumber).Scan(&failedAttempts)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, errors.New("Account not found")
+		}
+		return 0, err
+	}
+
+	return failedAttempts, nil
+}
+
+// ResetFailedPINAttempts reset failed PIN attempts
+func (ctx accountRepository) ResetFailedPINAttempts(accountNumber string) error {
+	query := `UPDATE account 
+			  SET failed_pin_attempts = 0,
+			      account_status = 'ACTIVE',
+			      updated_at = $1
+			  WHERE account_number = $2 AND deleted_at IS NULL`
+
+	result, err := ctx.RepoDB.DB.Exec(query, time.Now(), accountNumber)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return errors.New("Account not found")
+	}
+
+	return nil
+}
+
 // IncrementDecrementLastBalance update saldo akun dengan operator (+/-) dan return last balance
-// debitCreditOperator: "+" untuk credit (tambah), "-" untuk debit (kurang)
 func (ctx accountRepository) IncrementDecrementLastBalance(accountID int, amount float64, debitCreditOperator string, updatedAt string, tx *sql.Tx) (lastBalance float64, err error) {
 	var args []interface{}
 
-	// Validasi operator
 	if debitCreditOperator != "+" && debitCreditOperator != "-" {
 		return 0, errors.New("Invalid operator. Must be '+' or '-'")
 	}
@@ -162,11 +244,9 @@ func (ctx accountRepository) IncrementDecrementLastBalance(accountID int, amount
 		RETURNING balance
 	`
 
-	// Replace placeholder untuk PostgreSQL
 	query = helpers.ReplaceSQL(query, "?")
 	args = append(args, amount, updatedAt, accountID)
 
-	// Execute dengan atau tanpa transaction
 	if tx != nil {
 		err = tx.QueryRow(query, args...).Scan(&lastBalance)
 	} else {
@@ -224,7 +304,7 @@ func (ctx accountRepository) GetAccountList() ([]models.Account, error) {
 	return accountDto(rows)
 }
 
-// GetAccountBalance mendapatkan saldo akun (kept for backward compatibility)
+// GetAccountBalance mendapatkan saldo akun
 func (ctx accountRepository) GetAccountBalance(accountNumber string) (float64, error) {
 	var balance float64
 
@@ -270,6 +350,8 @@ func accountDto(rows *sql.Rows) ([]models.Account, error) {
 			&val.Balance,
 			&val.PIN,
 			&val.AccountName,
+			&val.AccountStatus,
+			&val.FailedPINAttempts,
 			&val.CreatedAt,
 			&val.UpdatedAt,
 		)

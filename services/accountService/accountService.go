@@ -1,6 +1,8 @@
 package accountService
 
 import (
+	// "crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -8,7 +10,6 @@ import (
 	"sample/helpers"
 	"sample/models"
 	"sample/services"
-	"strconv"
 	"time"
 
 	"github.com/labstack/echo"
@@ -30,49 +31,41 @@ func NewAccountService(service services.UsecaseService) accountService {
 func (svc accountService) CreateAccount(ctx echo.Context) error {
 	var result models.Response
 
-	// Bind dan validasi request
 	request := new(models.RequestCreateAccount)
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Validasi PIN harus 6 karakter dan hanya angka
 	if len(request.PIN) != 6 {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "panjang PIN harus 6 karakter", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Validasi PIN hanya boleh berisi angka
 	if !isNumeric(request.PIN) {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "PIN harus berupa angka", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Hash PIN menggunakan bcrypt
 	hashedPIN, err := hashPIN(request.PIN)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to hash PIN", nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
-	// Validasi initial deposit minimum
 	if request.InitialDeposit < 0 {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Initial deposit cant negative", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Generate account number otomatis
 	accountNumber := generateAccountNumber()
 
-	// Pastikan account number unik (max 5 attempts)
 	maxAttempts := 5
 	for attempts := 0; attempts < maxAttempts; attempts++ {
 		_, exists := svc.Service.AccountRepo.IsAccountExistsByNumber(accountNumber)
 		if !exists {
 			break
 		}
-		// Jika sudah ada, generate ulang
 		accountNumber = generateAccountNumber()
 
 		if attempts == maxAttempts-1 {
@@ -81,14 +74,12 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		}
 	}
 
-	// Mulai transaction untuk create account
 	tx, err := svc.Service.RepoDB.Begin()
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to start transaction", nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
-	// Set account data
 	account := models.Account{
 		AccountNumber: accountNumber,
 		AccountName:   request.AccountName,
@@ -98,7 +89,6 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		UpdatedAt:     time.Now(),
 	}
 
-	// Insert ke database
 	id, err := svc.Service.AccountRepo.AddAccount(account)
 	if err != nil {
 		tx.Rollback()
@@ -106,18 +96,17 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
-	// Commit transaction
 	if err := tx.Commit(); err != nil {
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to commit transaction", nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
-	// Response tanpa menampilkan PIN
 	response := models.AccountResponse{
 		ID:            id,
 		AccountNumber: account.AccountNumber,
 		AccountName:   account.AccountName,
 		Balance:       account.Balance,
+		AccountStatus: "ACTIVE",
 		CreatedAt:     account.CreatedAt,
 	}
 
@@ -125,14 +114,168 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// Helper function untuk mengecek apakah string hanya berisi angka
-func isNumeric(s string) bool {
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
+// ChangePIN ubah PIN akun
+func (svc accountService) ChangePIN(ctx echo.Context) error {
+	var result models.Response
+
+	request := new(models.RequestChangePIN)
+	if err := helpers.BindValidateStruct(ctx, request); err != nil {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
+		return ctx.JSON(http.StatusBadRequest, result)
 	}
-	return true
+
+	// Validasi format PIN baru
+	if !isNumeric(request.NewPIN) {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "PIN harus berupa angka", nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Validasi PIN lama tidak sama dengan PIN baru
+	if request.OldPIN == request.NewPIN {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "PIN baru tidak boleh sama dengan PIN lama", nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Cek akun exists
+	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
+		return ctx.JSON(http.StatusNotFound, result)
+	}
+
+	// Cek status akun
+	if account.AccountStatus == "BLOCKED_PIN" {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account is blocked due to multiple failed PIN attempts. Please use Forgot PIN", nil)
+		return ctx.JSON(http.StatusForbidden, result)
+	}
+
+	// Verifikasi PIN lama
+	if !checkPINHash(request.OldPIN, account.PIN) {
+		// Increment failed attempts
+		failedAttempts, _ := svc.Service.AccountRepo.IncrementFailedPINAttempts(request.AccountNumber)
+
+		remainingAttempts := 3 - failedAttempts
+		if remainingAttempts <= 0 {
+			result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account blocked due to multiple failed PIN attempts", nil)
+			return ctx.JSON(http.StatusForbidden, result)
+		}
+
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE,
+			fmt.Sprintf("Invalid old PIN. %d attempt(s) remaining", remainingAttempts), nil)
+		return ctx.JSON(http.StatusUnauthorized, result)
+	}
+
+	// Hash PIN baru
+	hashedPIN, err := hashPIN(request.NewPIN)
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to hash new PIN", nil)
+		return ctx.JSON(http.StatusInternalServerError, result)
+	}
+
+	// Update PIN
+	err = svc.Service.AccountRepo.UpdatePIN(request.AccountNumber, hashedPIN)
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
+		return ctx.JSON(http.StatusInternalServerError, result)
+	}
+
+	response := models.ChangePINResponse{
+		AccountNumber: request.AccountNumber,
+		// Message:       "PIN changed successfully",
+		ChangedAt: time.Now(),
+	}
+
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "PIN changed successfully", response)
+	return ctx.JSON(http.StatusOK, result)
+}
+
+// ForgotPIN untuk reset PIN (simulasi dengan token)
+func (svc accountService) ForgotPIN(ctx echo.Context) error {
+	var result models.Response
+
+	request := new(models.RequestForgotPIN)
+	if err := helpers.BindValidateStruct(ctx, request); err != nil {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Verifikasi account number dan account name
+	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
+		return ctx.JSON(http.StatusNotFound, result)
+	}
+
+	// Verifikasi account name
+	if account.AccountName != request.AccountName {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account name does not match", nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Generate reset token
+	resetToken := generateResetToken()
+
+	response := models.ForgotPINResponse{
+		AccountNumber: request.AccountNumber,
+		// Message:       "Reset token generated. Please use this token to reset your PIN",
+		ResetToken: resetToken,
+	}
+
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Reset token generated successfully", response)
+	return ctx.JSON(http.StatusOK, result)
+}
+
+// ResetPIN reset PIN dengan token
+func (svc accountService) ResetPIN(ctx echo.Context) error {
+	var result models.Response
+
+	request := new(models.RequestResetPIN)
+	if err := helpers.BindValidateStruct(ctx, request); err != nil {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Validasi format PIN
+	if !isNumeric(request.NewPIN) {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "PIN harus berupa angka", nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Validasi reset token
+	if len(request.ResetToken) < 32 {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid reset token", nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	// Cek akun exists
+	_, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
+		return ctx.JSON(http.StatusNotFound, result)
+	}
+
+	// Hash PIN baru
+	hashedPIN, err := hashPIN(request.NewPIN)
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to hash new PIN", nil)
+		return ctx.JSON(http.StatusInternalServerError, result)
+	}
+
+	// Update PIN dan reset failed attempts
+	err = svc.Service.AccountRepo.UpdatePIN(request.AccountNumber, hashedPIN)
+	if err != nil {
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
+		return ctx.JSON(http.StatusInternalServerError, result)
+	}
+
+	response := map[string]interface{}{
+		"account_number": request.AccountNumber,
+		// "message":        "PIN reset successfully",
+		"reset_at": time.Now(),
+	}
+
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "PIN reset successfully", response)
+	return ctx.JSON(http.StatusOK, result)
 }
 
 // GetAccountList mendapatkan list semua akun
@@ -145,13 +288,11 @@ func (svc accountService) GetAccountList(ctx echo.Context) error {
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
-	// Handle jika tidak ada data
 	if len(accounts) == 0 {
 		result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "No accounts found", []models.AccountResponse{})
 		return ctx.JSON(http.StatusOK, result)
 	}
 
-	// Convert ke response tanpa PIN
 	var accountResponses []models.AccountResponse
 	for _, acc := range accounts {
 		accountResponses = append(accountResponses, models.AccountResponse{
@@ -159,11 +300,12 @@ func (svc accountService) GetAccountList(ctx echo.Context) error {
 			AccountNumber: acc.AccountNumber,
 			AccountName:   acc.AccountName,
 			Balance:       acc.Balance,
+			AccountStatus: acc.AccountStatus,
 			CreatedAt:     acc.CreatedAt,
 		})
 	}
 
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account retrivied successfully", accountResponses)
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account retrieved successfully", accountResponses)
 	return ctx.JSON(http.StatusOK, result)
 }
 
@@ -171,62 +313,28 @@ func (svc accountService) GetAccountList(ctx echo.Context) error {
 func (svc accountService) GetAccountByID(ctx echo.Context) error {
 	var result models.Response
 
-	// Bind dan validasi request
 	request := new(models.RequestGetAccountByID)
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Cek account exists by ID
 	account, err := svc.Service.AccountRepo.FindAccountById(request.ID)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	// Response tanpa PIN
 	response := models.AccountResponse{
 		ID:            account.ID,
 		AccountNumber: account.AccountNumber,
 		AccountName:   account.AccountName,
 		Balance:       account.Balance,
+		AccountStatus: account.AccountStatus,
 		CreatedAt:     account.CreatedAt,
 	}
 
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account retrivied successfully", response)
-	return ctx.JSON(http.StatusOK, result)
-}
-
-// GetAccountDetailByID mendapatkan detail akun berdasarkan ID (GET method)
-func (svc accountService) GetAccountDetailByID(ctx echo.Context) error {
-	var result models.Response
-
-	// Get ID from URL parameter
-	ID, err := strconv.Atoi(ctx.Param("id"))
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Invalid account ID", nil)
-		return ctx.JSON(http.StatusBadRequest, result)
-	}
-
-	// Cek account exists by ID
-	account, err := svc.Service.AccountRepo.FindAccountById(ID)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
-		return ctx.JSON(http.StatusNotFound, result)
-	}
-
-	// Response tanpa PIN
-	response := models.AccountDetailResponse{
-		ID:            account.ID,
-		AccountNumber: account.AccountNumber,
-		AccountName:   account.AccountName,
-		Balance:       account.Balance,
-		CreatedAt:     account.CreatedAt,
-		UpdatedAt:     account.UpdatedAt,
-	}
-
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, constans.EMPTY_VALUE, response)
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account retrieved successfully", response)
 	return ctx.JSON(http.StatusOK, result)
 }
 
@@ -240,20 +348,17 @@ func (svc accountService) UpdateAccount(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Cek account exists
 	_, err := svc.Service.AccountRepo.FindAccountById(request.ID)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, err.Error(), nil)
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	// Set account data
 	account := models.Account{
 		ID:          request.ID,
 		AccountName: request.AccountName,
 	}
 
-	// Update
 	id, err := svc.Service.AccountRepo.UpdateAccount(account)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
@@ -268,27 +373,23 @@ func (svc accountService) UpdateAccount(ctx echo.Context) error {
 func (svc accountService) DeleteAccount(ctx echo.Context) error {
 	var result models.Response
 
-	// Bind dan validasi request
 	request := new(models.RequestDeleteAccount)
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Cek account exists
 	account, err := svc.Service.AccountRepo.FindAccountById(request.ID)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	// Validasi: tidak bisa delete jika masih ada saldo
 	if account.Balance > 0 {
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Cannot delete account with remaining balance", nil)
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Soft delete
 	err = svc.Service.AccountRepo.RemoveAccount(request.ID)
 	if err != nil {
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
@@ -303,39 +404,43 @@ func (svc accountService) DeleteAccount(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// hashPIN hash PIN menggunakan bcrypt
+// Helper functions
+func isNumeric(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func hashPIN(pin string) (string, error) {
 	bytes, err := bcrypt.GenerateFromPassword([]byte(pin), 4)
 	return string(bytes), err
 }
 
-// checkPINHash verifikasi PIN
 func checkPINHash(pin, hash string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pin))
 	return err == nil
 }
 
-// generateAccountNumber menghasilkan nomor akun unik otomatis
 func generateAccountNumber() string {
-	// Format: timestamp + random 4 digit
 	rand.New(rand.NewSource(time.Now().UnixNano()))
-
-	// Ambil timestamp dalam milidetik
 	timestamp := time.Now().UnixNano() / 1000000
-
-	// Generate random 4 digit
 	random := rand.Intn(10000)
-
-	// Gabungkan dan ambil 10 digit terakhir
 	number := fmt.Sprintf("%d%04d", timestamp, random)
 
-	// Pastikan panjang 10 digit
 	if len(number) > 10 {
 		number = number[len(number)-10:]
 	} else if len(number) < 10 {
-		// Tambahkan leading zeros jika kurang dari 10 digit
 		number = fmt.Sprintf("%010s", number)
 	}
 
 	return number
+}
+
+func generateResetToken() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }

@@ -41,6 +41,18 @@ type RequestWithdraw struct {
 	PIN           string  `json:"pin" validate:"required,len=6"`
 }
 
+type RequestTransactionHistory struct {
+	AccountNumber string `json:"account_number" validate:"required"`
+	StartDate     string `json:"start_date,omitempty"` // Format: 2006-01-02
+	EndDate       string `json:"end_date,omitempty"`   // Format: 2006-01-02
+	Limit         int    `json:"limit,omitempty"`      // Default 10
+	Page          int    `json:"page,omitempty"`       // Default 1
+}
+
+type RequestTransactionDetail struct {
+	TransactionID int `json:"transaction_id" validate:"required,min=1"`
+}
+
 // Response Models
 
 type TransactionResponse struct {
@@ -57,23 +69,63 @@ type TransactionResponse struct {
 }
 
 type TransferResponse struct {
-	// TransactionID     string    `json:"transaction_id"`
-	FromAccountNumber string    `json:"source_number"`      //from_account_number
-	ToAccountNumber   string    `json:"beneficiary_number"` //to_account_number
+	FromAccountNumber string    `json:"source_number"`
+	ToAccountNumber   string    `json:"beneficiary_number"`
 	Amount            float64   `json:"amount"`
 	TransactionDate   time.Time `json:"transaction_date"`
+}
+
+type TransactionHistoryResponse struct {
+	Transactions []TransactionResponse `json:"transactions"`
+	TotalRecords int                   `json:"total_records"`
+	Pagination   PaginationMeta        `json:"pagination"`
+}
+
+type PaginationMeta struct {
+	CurrentPage  int `json:"current_page"`
+	PerPage      int `json:"per_page"`
+	TotalRecords int `json:"total_records"`
+	TotalPages   int `json:"total_pages"`
+}
+
+type TransactionDetailResponse struct {
+	ID                int    `json:"id"`
+	AccountNumber     string `json:"account_number"`
+	AccountName       string `json:"account_name"`
+	SourceNumber      string `json:"source_number,omitempty"`
+	BeneficiaryNumber string `json:"beneficiary_number,omitempty"`
+	TransactionType   string `json:"transaction_type"`
+	// TransactionTypeDesc string    `json:"transaction_type_desc"`
+	Amount float64 `json:"amount"`
+	// Description     string    `json:"description"`
+	TransactionTime time.Time `json:"transaction_time"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type TransactionSimpleResponse struct {
+	ID              int    `json:"id"`
+	AccountNumber   string `json:"account_number"`
+	TransactionType string `json:"transaction_type"`
+	// TransactionTypeDesc string    `json:"transaction_type_desc"` // Debit (Keluar) / Credit (Masuk)
+	Amount          float64   `json:"amount"`
+	TransactionTime time.Time `json:"transaction_time"`
+}
+
+type TransactionHistorySimpleResponse struct {
+	Transactions []TransactionSimpleResponse `json:"transactions"`
+	Pagination   PaginationMeta              `json:"pagination"`
 }
 
 // Helper function untuk membuat deskripsi transaksi
 func (t *Transaction) GetDescription() string {
 	switch t.TransactionType {
 	case "D": // Debit (Keluar)
-		if t.BeneficiaryNumber != "" {
+		if t.BeneficiaryNumber != "" && t.BeneficiaryNumber != t.AccountNumber {
 			return "Transfer ke " + t.BeneficiaryNumber
 		}
 		return "Penarikan Tunai"
 	case "C": // Credit (Masuk)
-		if t.SourceNumber != "" {
+		if t.SourceNumber != "" && t.SourceNumber != t.AccountNumber {
 			return "Transfer dari " + t.SourceNumber
 		}
 		return "Setoran Tunai"
@@ -107,5 +159,33 @@ func (t *Transaction) ToResponse() TransactionResponse {
 		Amount:              t.Amount,
 		Description:         t.GetDescription(),
 		TransactionTime:     t.TransactionTime,
+	}
+}
+
+// Convert Transaction to TransactionDetailResponse
+func (t *Transaction) ToDetailResponse() TransactionDetailResponse {
+	return TransactionDetailResponse{
+		ID:                t.ID,
+		AccountNumber:     t.AccountNumber,
+		AccountName:       t.AccountName,
+		SourceNumber:      t.SourceNumber,
+		BeneficiaryNumber: t.BeneficiaryNumber,
+		TransactionType:   t.TransactionType,
+		// TransactionTypeDesc: t.GetTypeDescription(),
+		Amount: t.Amount,
+		// Description:     t.GetDescription(),
+		TransactionTime: t.TransactionTime,
+		CreatedAt:       t.CreatedAt,
+	}
+}
+
+func (t *Transaction) ToSimpleResponse() TransactionSimpleResponse {
+	return TransactionSimpleResponse{
+		ID:              t.ID,
+		AccountNumber:   t.AccountNumber,
+		TransactionType: t.TransactionType,
+		// TransactionTypeDesc: t.GetTypeDescription(),
+		Amount:          t.Amount,
+		TransactionTime: t.TransactionTime,
 	}
 }
