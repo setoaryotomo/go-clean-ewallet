@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sample/models"
 	"sample/repositories"
-	"strconv"
 	"time"
 )
 
@@ -90,7 +89,7 @@ func (ctx transactionRepository) FindTransactionById(id int) (models.Transaction
 	return transaction, nil
 }
 
-// GetTransactionHistory mendapatkan riwayat transaksi dengan pagination
+// GetTransactionHistory mendapatkan riwayat transaksi
 func (ctx transactionRepository) GetTransactionHistory(accountNumber string, startDate, endDate string, limit, page int) ([]models.Transaction, int, error) {
 	var totalRecords int
 
@@ -103,17 +102,71 @@ func (ctx transactionRepository) GetTransactionHistory(accountNumber string, sta
 	}
 	offset := (page - 1) * limit
 
-	// Base query
-	baseQuery := `FROM transaction WHERE account_number = $1 AND deleted_at IS NULL`
-	params := []interface{}{accountNumber}
+	// Base query dan parameter
+	var baseQuery string
+	var params []interface{}
 	paramCount := 1
+
+	// Filter berdasarkan account number jika ada
+	if accountNumber != "" {
+		baseQuery = `FROM transaction WHERE account_number = $1 AND deleted_at IS NULL`
+		params = append(params, accountNumber)
+	} else {
+		baseQuery = `FROM transaction WHERE deleted_at IS NULL`
+		// Tidak ada parameter untuk account number
+		paramCount = 0
+	}
 
 	// Filter berdasarkan tanggal jika ada
 	if startDate != "" && endDate != "" {
-		paramCount++
-		baseQuery += ` AND DATE(transaction_time) BETWEEN $` + strconv.Itoa(paramCount) + ` AND $` + strconv.Itoa(paramCount+1)
-		params = append(params, startDate, endDate)
-		paramCount++
+		if baseQuery == `FROM transaction WHERE deleted_at IS NULL` {
+			// Jika accountNumber kosong
+			baseQuery += ` AND DATE(transaction_time) BETWEEN $1 AND $2`
+			params = append(params, startDate, endDate)
+			paramCount = 2
+		} else {
+			// Jika accountNumber ada
+			baseQuery += ` AND DATE(transaction_time) BETWEEN $2 AND $3`
+			params = append(params, startDate, endDate)
+			paramCount = 3
+		}
+	} else if startDate != "" || endDate != "" {
+		// Handle jika hanya satu tanggal yang diberikan
+		if startDate != "" {
+			if baseQuery == `FROM transaction WHERE deleted_at IS NULL` {
+				baseQuery += ` AND DATE(transaction_time) >= $1`
+				params = append(params, startDate)
+				paramCount = 1
+			} else {
+				baseQuery += ` AND DATE(transaction_time) >= $2`
+				params = append(params, startDate)
+				paramCount = 2
+			}
+		}
+		if endDate != "" {
+			if baseQuery == `FROM transaction WHERE deleted_at IS NULL` {
+				if startDate != "" {
+					baseQuery += ` AND DATE(transaction_time) <= $2`
+				} else {
+					baseQuery += ` AND DATE(transaction_time) <= $1`
+				}
+				params = append(params, endDate)
+				if startDate != "" {
+					paramCount = 2
+				} else {
+					paramCount = 1
+				}
+			} else {
+				if startDate != "" {
+					baseQuery += ` AND DATE(transaction_time) <= $3`
+					paramCount = 3
+				} else {
+					baseQuery += ` AND DATE(transaction_time) <= $2`
+					paramCount = 2
+				}
+				params = append(params, endDate)
+			}
+		}
 	}
 
 	// Count total records
@@ -124,9 +177,22 @@ func (ctx transactionRepository) GetTransactionHistory(accountNumber string, sta
 	}
 
 	// Get data dengan pagination
-	dataQuery := `SELECT ` + defineColumn + ` ` + baseQuery + ` ORDER BY transaction_time DESC LIMIT $` +
-		strconv.Itoa(paramCount+1) + ` OFFSET $` + strconv.Itoa(paramCount+2)
-	params = append(params, limit, offset)
+	dataQuery := `SELECT ` + defineColumn + ` ` + baseQuery + ` ORDER BY transaction_time DESC`
+
+	// Tambahkan parameter untuk limit dan offset
+	if paramCount == 0 {
+		dataQuery += ` LIMIT $1 OFFSET $2`
+		params = append(params, limit, offset)
+	} else if paramCount == 1 {
+		dataQuery += ` LIMIT $2 OFFSET $3`
+		params = append(params, limit, offset)
+	} else if paramCount == 2 {
+		dataQuery += ` LIMIT $3 OFFSET $4`
+		params = append(params, limit, offset)
+	} else if paramCount == 3 {
+		dataQuery += ` LIMIT $4 OFFSET $5`
+		params = append(params, limit, offset)
+	}
 
 	rows, err := ctx.RepoDB.DB.Query(dataQuery, params...)
 	if err != nil {

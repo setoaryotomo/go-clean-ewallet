@@ -42,7 +42,7 @@ type RequestWithdraw struct {
 }
 
 type RequestTransactionHistory struct {
-	AccountNumber string `json:"account_number" validate:"required"`
+	AccountNumber string `json:"account_number,omitempty"`
 	StartDate     string `json:"start_date,omitempty"` // Format: 2006-01-02
 	EndDate       string `json:"end_date,omitempty"`   // Format: 2006-01-02
 	Limit         int    `json:"limit,omitempty"`      // Default 10

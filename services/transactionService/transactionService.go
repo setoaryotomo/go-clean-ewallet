@@ -375,7 +375,7 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// GetTransactionHistory mendapatkan riwayat transaksi (versi sederhana)
+// GetTransactionHistory mendapatkan riwayat transaksi (account number optional)
 func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 	var result models.Response
 
@@ -385,11 +385,13 @@ func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	// Verify account exists
-	_, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
-	if err != nil {
-		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
-		return ctx.JSON(http.StatusNotFound, result)
+	// Jika account number diberikan, verifikasi account exists
+	if request.AccountNumber != "" {
+		_, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
+		if err != nil {
+			result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
+			return ctx.JSON(http.StatusNotFound, result)
+		}
 	}
 
 	// Set default values
@@ -398,6 +400,11 @@ func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 	}
 	if request.Page <= 0 {
 		request.Page = 1
+	}
+
+	// Jika tidak ada account number, set limit maksimal untuk prevent overload
+	if request.AccountNumber == "" && request.Limit > 100 {
+		request.Limit = 100
 	}
 
 	// Get transaction history
@@ -433,7 +440,12 @@ func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 		},
 	}
 
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Transaction history retrieved successfully", response)
+	message := "Transaction history retrieved successfully"
+	if request.AccountNumber == "" {
+		message = "All transactions retrieved successfully"
+	}
+
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, message, response)
 	return ctx.JSON(http.StatusOK, result)
 }
 
