@@ -41,6 +41,30 @@ func (svc transactionService) Deposit(ctx echo.Context) error {
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
+	// Check account status
+	if account.AccountStatus == "BLOCKED_PIN" {
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account is blocked. Please reset your PIN", nil)
+		return ctx.JSON(http.StatusForbidden, result)
+	}
+
+	// Verify PIN with failed attempts tracking
+	if !helpers.CheckPINHash(request.PIN, account.PIN) {
+		failedAttempts, _ := svc.Service.AccountRepo.IncrementFailedPINAttempts(request.AccountNumber)
+
+		remainingAttempts := 3 - failedAttempts
+		if remainingAttempts <= 0 {
+			result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, "Account blocked due to multiple failed PIN attempts", nil)
+			return ctx.JSON(http.StatusForbidden, result)
+		}
+
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE,
+			"Invalid PIN. "+strconv.Itoa(remainingAttempts)+" attempt(s) remaining", nil)
+		return ctx.JSON(http.StatusUnauthorized, result)
+	}
+
+	// Reset failed attempts on successful PIN
+	svc.Service.AccountRepo.ResetFailedPINAttempts(request.AccountNumber)
+
 	balanceBefore := account.Balance
 	transactionTime := time.Now()
 	updatedAt := transactionTime.Format("2006-01-02 15:04:05")
@@ -375,7 +399,7 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, result)
 }
 
-// GetTransactionHistory mendapatkan riwayat transaksi (account number optional)
+// GetTransactionHistory mendapatkan riwayat transaksi
 func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 	var result models.Response
 
@@ -394,17 +418,30 @@ func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 		}
 	}
 
-	// Set default values
-	if request.Limit <= 0 {
-		request.Limit = 10
-	}
-	if request.Page <= 0 {
-		request.Page = 1
-	}
+	// Deteksi apakah pagination diminta (limit > 0 atau page > 0)
+	usePagination := request.Limit > 0 || request.Page > 0
 
-	// Jika tidak ada account number, set limit maksimal untuk prevent overload
-	if request.AccountNumber == "" && request.Limit > 100 {
-		request.Limit = 100
+	var limit, page int
+	if usePagination {
+		// Set default values untuk pagination
+		limit = request.Limit
+		page = request.Page
+
+		if limit <= 0 {
+			limit = 10
+		}
+		if page <= 0 {
+			page = 1
+		}
+
+		// Jika tidak ada account number, set limit maksimal untuk prevent overload
+		if request.AccountNumber == "" && limit > 100 {
+			limit = 100
+		}
+	} else {
+		// Tanpa pagination: set limit dan page ke 0
+		limit = 0
+		page = 0
 	}
 
 	// Get transaction history
@@ -412,8 +449,8 @@ func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 		request.AccountNumber,
 		request.StartDate,
 		request.EndDate,
-		request.Limit,
-		request.Page,
+		limit,
+		page,
 	)
 
 	if err != nil {
@@ -427,25 +464,37 @@ func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 		transactionResponses = append(transactionResponses, tx.ToSimpleResponse())
 	}
 
-	// Calculate pagination
-	totalPages := int(math.Ceil(float64(totalRecords) / float64(request.Limit)))
-
-	response := models.TransactionHistorySimpleResponse{
-		Transactions: transactionResponses,
-		Pagination: models.PaginationMeta{
-			CurrentPage:  request.Page,
-			PerPage:      request.Limit,
-			TotalRecords: totalRecords,
-			TotalPages:   totalPages,
-		},
-	}
-
 	message := "Transaction history retrieved successfully"
 	if request.AccountNumber == "" {
 		message = "All transactions retrieved successfully"
 	}
 
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, message, response)
+	// Response berbeda tergantung apakah ada pagination atau tidak
+	if usePagination {
+		// Dengan pagination
+		totalPages := int(math.Ceil(float64(totalRecords) / float64(limit)))
+
+		response := models.TransactionHistorySimpleResponse{
+			Transactions: transactionResponses,
+			Pagination: models.PaginationMeta{
+				CurrentPage:  page,
+				PerPage:      limit,
+				TotalRecords: totalRecords,
+				TotalPages:   totalPages,
+			},
+		}
+
+		result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, message, response)
+	} else {
+		// Tanpa pagination - hanya return array transactions
+		responseData := map[string]interface{}{
+			"transactions":  transactionResponses,
+			"total_records": totalRecords,
+		}
+
+		result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, message, responseData)
+	}
+
 	return ctx.JSON(http.StatusOK, result)
 }
 
@@ -471,9 +520,3 @@ func (svc transactionService) GetTransactionDetail(ctx echo.Context) error {
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Transaction detail retrieved successfully", response)
 	return ctx.JSON(http.StatusOK, result)
 }
-
-// checkPINHash verifikasi PIN
-// func checkPINHash(pin, hash string) bool {
-// 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pin))
-// 	return err == nil
-// }

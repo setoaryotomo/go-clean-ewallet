@@ -33,6 +33,7 @@ type RequestCheckBalance struct {
 type RequestDeposit struct {
 	AccountNumber string  `json:"account_number" validate:"required"`
 	Amount        float64 `json:"amount" validate:"required,min=10000"`
+	PIN           string  `json:"pin" validate:"required,len=6"`
 }
 
 type RequestWithdraw struct {

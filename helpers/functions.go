@@ -1,6 +1,7 @@
 package helpers
 
 import (
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -137,4 +138,45 @@ func GenerateResetToken() string {
 
 func Contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || Contains(s[1:], substr)))
+}
+
+// transactionDto helper untuk mapping rows ke struct
+func TransactionDto(rows *sql.Rows) ([]models.Transaction, error) {
+	var result []models.Transaction
+
+	for rows.Next() {
+		var val models.Transaction
+		var sourceNumber, beneficiaryNumber sql.NullString
+
+		err := rows.Scan(
+			&val.ID,
+			&val.AccountID,
+			&val.AccountNumber,
+			&val.AccountName,
+			&sourceNumber,
+			&beneficiaryNumber,
+			&val.TransactionType,
+			&val.Amount,
+			&val.TransactionTime,
+			&val.CreatedAt,
+		)
+		if err != nil {
+			return result, err
+		}
+
+		val.SourceNumber = sourceNumber.String
+		val.BeneficiaryNumber = beneficiaryNumber.String
+
+		result = append(result, val)
+	}
+
+	return result, nil
+}
+
+// Helper functions
+func NullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
 }

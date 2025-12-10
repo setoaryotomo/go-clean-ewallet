@@ -3,6 +3,7 @@ package transactionRepository
 import (
 	"database/sql"
 	"errors"
+	"sample/helpers"
 	"sample/models"
 	"sample/repositories"
 	"time"
@@ -40,8 +41,8 @@ func (ctx transactionRepository) AddTransaction(transaction models.Transaction) 
 		transaction.AccountID,
 		transaction.AccountNumber,
 		transaction.AccountName,
-		nullString(transaction.SourceNumber),
-		nullString(transaction.BeneficiaryNumber),
+		helpers.NullString(transaction.SourceNumber),
+		helpers.NullString(transaction.BeneficiaryNumber),
 		transaction.TransactionType,
 		transaction.Amount,
 		transaction.TransactionTime,
@@ -93,45 +94,32 @@ func (ctx transactionRepository) FindTransactionById(id int) (models.Transaction
 func (ctx transactionRepository) GetTransactionHistory(accountNumber string, startDate, endDate string, limit, page int) ([]models.Transaction, int, error) {
 	var totalRecords int
 
-	// Set default limit dan page
-	if limit <= 0 {
-		limit = 10
-	}
-	if page <= 0 {
-		page = 1
-	}
-	offset := (page - 1) * limit
-
 	// Base query dan parameter
 	var baseQuery string
 	var params []interface{}
 	paramCount := 1
 
-	// Filter berdasarkan account number jika ada
+	// Filter berdasarkan account number
 	if accountNumber != "" {
 		baseQuery = `FROM transaction WHERE account_number = $1 AND deleted_at IS NULL`
 		params = append(params, accountNumber)
 	} else {
 		baseQuery = `FROM transaction WHERE deleted_at IS NULL`
-		// Tidak ada parameter untuk account number
 		paramCount = 0
 	}
 
-	// Filter berdasarkan tanggal jika ada
+	// Filter berdasarkan tanggal
 	if startDate != "" && endDate != "" {
 		if baseQuery == `FROM transaction WHERE deleted_at IS NULL` {
-			// Jika accountNumber kosong
 			baseQuery += ` AND DATE(transaction_time) BETWEEN $1 AND $2`
 			params = append(params, startDate, endDate)
 			paramCount = 2
 		} else {
-			// Jika accountNumber ada
 			baseQuery += ` AND DATE(transaction_time) BETWEEN $2 AND $3`
 			params = append(params, startDate, endDate)
 			paramCount = 3
 		}
 	} else if startDate != "" || endDate != "" {
-		// Handle jika hanya satu tanggal yang diberikan
 		if startDate != "" {
 			if baseQuery == `FROM transaction WHERE deleted_at IS NULL` {
 				baseQuery += ` AND DATE(transaction_time) >= $1`
@@ -176,23 +164,32 @@ func (ctx transactionRepository) GetTransactionHistory(accountNumber string, sta
 		return nil, 0, err
 	}
 
-	// Get data dengan pagination
+	// Get data
 	dataQuery := `SELECT ` + defineColumn + ` ` + baseQuery + ` ORDER BY transaction_time DESC`
 
-	// Tambahkan parameter untuk limit dan offset
-	if paramCount == 0 {
-		dataQuery += ` LIMIT $1 OFFSET $2`
-		params = append(params, limit, offset)
-	} else if paramCount == 1 {
-		dataQuery += ` LIMIT $2 OFFSET $3`
-		params = append(params, limit, offset)
-	} else if paramCount == 2 {
-		dataQuery += ` LIMIT $3 OFFSET $4`
-		params = append(params, limit, offset)
-	} else if paramCount == 3 {
-		dataQuery += ` LIMIT $4 OFFSET $5`
-		params = append(params, limit, offset)
+	// Jika limit > 0, gunakan pagination
+	if limit > 0 {
+		if page <= 0 {
+			page = 1
+		}
+		offset := (page - 1) * limit
+
+		// Tambahkan parameter untuk limit dan offset
+		if paramCount == 0 {
+			dataQuery += ` LIMIT $1 OFFSET $2`
+			params = append(params, limit, offset)
+		} else if paramCount == 1 {
+			dataQuery += ` LIMIT $2 OFFSET $3`
+			params = append(params, limit, offset)
+		} else if paramCount == 2 {
+			dataQuery += ` LIMIT $3 OFFSET $4`
+			params = append(params, limit, offset)
+		} else if paramCount == 3 {
+			dataQuery += ` LIMIT $4 OFFSET $5`
+			params = append(params, limit, offset)
+		}
 	}
+	// Jika limit = 0, tidak ada LIMIT dan OFFSET (ambil semua data)
 
 	rows, err := ctx.RepoDB.DB.Query(dataQuery, params...)
 	if err != nil {
@@ -200,51 +197,10 @@ func (ctx transactionRepository) GetTransactionHistory(accountNumber string, sta
 	}
 	defer rows.Close()
 
-	transactions, err := transactionDto(rows)
+	transactions, err := helpers.TransactionDto(rows)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	return transactions, totalRecords, nil
-}
-
-// transactionDto helper untuk mapping rows ke struct
-func transactionDto(rows *sql.Rows) ([]models.Transaction, error) {
-	var result []models.Transaction
-
-	for rows.Next() {
-		var val models.Transaction
-		var sourceNumber, beneficiaryNumber sql.NullString
-
-		err := rows.Scan(
-			&val.ID,
-			&val.AccountID,
-			&val.AccountNumber,
-			&val.AccountName,
-			&sourceNumber,
-			&beneficiaryNumber,
-			&val.TransactionType,
-			&val.Amount,
-			&val.TransactionTime,
-			&val.CreatedAt,
-		)
-		if err != nil {
-			return result, err
-		}
-
-		val.SourceNumber = sourceNumber.String
-		val.BeneficiaryNumber = beneficiaryNumber.String
-
-		result = append(result, val)
-	}
-
-	return result, nil
-}
-
-// Helper functions
-func nullString(s string) sql.NullString {
-	if s == "" {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: s, Valid: true}
 }

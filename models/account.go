@@ -7,9 +7,9 @@ type Account struct {
 	ID                int       `json:"id"`
 	AccountNumber     string    `json:"account_number"`
 	Balance           float64   `json:"balance"`
-	PIN               string    `json:"pin,omitempty"` // omitempty agar tidak muncul di response
+	PIN               string    `json:"pin,omitempty"`
 	AccountName       string    `json:"account_name"`
-	AccountStatus     string    `json:"account_status"` // ACTIVE, INACTIVE, BLOCKED_PIN
+	AccountStatus     string    `json:"account_status"`
 	FailedPINAttempts int       `json:"failed_pin_attempts"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
@@ -95,7 +95,7 @@ type ChangePINResponse struct {
 type ForgotPINResponse struct {
 	AccountNumber string    `json:"account_number"`
 	ResetToken    string    `json:"reset_token"`
-	ExpiresAt     time.Time `json:"expires_at"` // Waktu expiry
+	ExpiresAt     time.Time `json:"expires_at"`
 }
 
 type ResetPINResponse struct {
