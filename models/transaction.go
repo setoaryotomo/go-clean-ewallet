@@ -46,7 +46,7 @@ type RequestTransactionHistory struct {
 	AccountNumber string `json:"account_number,omitempty"`
 	StartDate     string `json:"start_date,omitempty" validate:"required"` // Format: 2006-01-02
 	EndDate       string `json:"end_date,omitempty" validate:"required"`   // Format: 2006-01-02
-	Limit         int    `json:"limit,omitempty validate:"required"`       // Default 10
+	Limit         int    `json:"limit,omitempty" validate:"required"`      // Default 10
 	Page          int    `json:"page,omitempty" validate:"required"`       // Default 1
 }
 
