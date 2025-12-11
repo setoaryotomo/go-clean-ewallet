@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"sample/constans"
 	"sample/models"
 	"strconv"
 	"strings"
@@ -41,7 +42,7 @@ func BindValidateStruct(ctx echo.Context, i interface{}) error {
 }
 
 func ResponseJSON(success bool, code string, msg string, result interface{}) models.Response {
-	tm := time.Now()
+	tm := time.Now().Format(constans.LAYOUT_TIMESTAMP)
 	response := models.Response{
 		Success:          success,
 		StatusCode:       code,

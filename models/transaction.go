@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"sample/constans"
+	"time"
+)
 
 // Transaction model
 type Transaction struct {
@@ -99,8 +102,10 @@ type TransactionDetailResponse struct {
 	// TransactionTypeDesc string    `json:"transaction_type_desc"`
 	Amount float64 `json:"amount"`
 	// Description     string    `json:"description"`
-	TransactionTime time.Time `json:"transaction_time"`
-	CreatedAt       time.Time `json:"created_at"`
+	// TransactionTime time.Time `json:"transaction_time"`
+	TransactionTime string `json:"transaction_time"`
+	// CreatedAt       time.Time `json:"created_at"`
+	CreatedAt string `json:"created_at"`
 }
 
 type TransactionSimpleResponse struct {
@@ -108,8 +113,9 @@ type TransactionSimpleResponse struct {
 	AccountNumber   string `json:"account_number"`
 	TransactionType string `json:"transaction_type"`
 	// TransactionTypeDesc string    `json:"transaction_type_desc"` // Debit (Keluar) / Credit (Masuk)
-	Amount          float64   `json:"amount"`
-	TransactionTime time.Time `json:"transaction_time"`
+	Amount float64 `json:"amount"`
+	// TransactionTime time.Time `json:"transaction_time"`
+	TransactionTime string `json:"transaction_time"`
 }
 
 type TransactionHistorySimpleResponse struct {
@@ -175,8 +181,10 @@ func (t *Transaction) ToDetailResponse() TransactionDetailResponse {
 		// TransactionTypeDesc: t.GetTypeDescription(),
 		Amount: t.Amount,
 		// Description:     t.GetDescription(),
-		TransactionTime: t.TransactionTime,
-		CreatedAt:       t.CreatedAt,
+		// TransactionTime: t.TransactionTime,
+		TransactionTime: t.TransactionTime.Format(constans.LAYOUT_TIMESTAMP),
+		// CreatedAt:       t.CreatedAt,
+		CreatedAt: t.CreatedAt.Format(constans.LAYOUT_TIMESTAMP),
 	}
 }
 
@@ -187,6 +195,6 @@ func (t *Transaction) ToSimpleResponse() TransactionSimpleResponse {
 		TransactionType: t.TransactionType,
 		// TransactionTypeDesc: t.GetTypeDescription(),
 		Amount:          t.Amount,
-		TransactionTime: t.TransactionTime,
+		TransactionTime: t.TransactionTime.Format(constans.LAYOUT_TIMESTAMP),
 	}
 }
