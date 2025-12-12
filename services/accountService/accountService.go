@@ -28,9 +28,18 @@ func NewAccountService(service services.UsecaseService) accountService {
 
 // CreateAccount membuat akun baru
 func (svc accountService) CreateAccount(ctx echo.Context) error {
-	var result models.Response
-	const serviceName = "CreateAccount"
-	request := new(models.RequestCreateAccount)
+	var (
+		result        models.Response
+		serviceName   = "CreateAccount"
+		accountNumber = helpers.GenerateAccountNumber()
+		accountID     int
+
+		// request  models.RequestCreateAccount
+		request  = new(models.RequestCreateAccount)
+		account  models.Account
+		response models.AccountResponse
+	)
+
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "CreateAccount.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -67,7 +76,7 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	accountNumber := helpers.GenerateAccountNumber()
+	// accountNumber := helpers.GenerateAccountNumber()
 
 	maxAttempts := 5
 	for attempts := 0; attempts < maxAttempts; attempts++ {
@@ -85,14 +94,7 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		}
 	}
 
-	tx, err := svc.Service.RepoDB.Begin()
-	if err != nil {
-		utils.LogError(serviceName, constans.EMPTY_VALUE, "CreateAccount.BeginTransaction", err)
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to start transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
-
-	account := models.Account{
+	account = models.Account{
 		AccountNumber: accountNumber,
 		AccountName:   request.AccountName,
 		Balance:       request.InitialDeposit,
@@ -101,24 +103,25 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		UpdatedAt:     time.Now(),
 	}
 
-	id, err := svc.Service.AccountRepo.AddAccount(account)
+	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
+		id, err := svc.Service.AccountRepo.AddAccount(account)
+		if err != nil {
+			return err
+		}
+		accountID = id
+		return nil
+	})
+
 	if err != nil {
-		tx.Rollback()
-		utils.LogError(serviceName, accountNumber, "CreateAccount.AddAccount", err)
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
+		utils.LogError(serviceName, accountNumber, "CreateAccount.DBTransaction", err)
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to create account: "+err.Error(), nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
-	if err := tx.Commit(); err != nil {
-		utils.LogError(serviceName, accountNumber, "CreateAccount.CommitTransaction", err)
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to commit transaction", nil)
-		return ctx.JSON(http.StatusInternalServerError, result)
-	}
+	utils.LogInfo(serviceName, accountNumber, "CreateAccount.Success", fmt.Sprintf("Account ID: %d", accountID))
 
-	utils.LogInfo(serviceName, accountNumber, "CreateAccount.Success", fmt.Sprintf("Account ID: %d", id))
-
-	response := models.AccountResponse{
-		ID:            id,
+	response = models.AccountResponse{
+		ID:            accountID,
 		AccountNumber: account.AccountNumber,
 		Balance:       account.Balance,
 		AccountName:   account.AccountName,
@@ -126,17 +129,19 @@ func (svc accountService) CreateAccount(ctx echo.Context) error {
 		CreatedAt:     account.CreatedAt.Format(time.RFC3339),
 	}
 
-	// response := account.ToCreateResponse()
-
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account created successfully", response)
 	return ctx.JSON(http.StatusOK, result)
 }
 
 // ChangePIN ubah PIN akun dengan satu DBTransaction
 func (svc accountService) ChangePIN(ctx echo.Context) error {
-	var result models.Response
-	serviceName := "AccountService" // Define the serviceName variable
-	request := new(models.RequestChangePIN)
+	var (
+		result      models.Response
+		serviceName = "AccountService"
+		// request     models.RequestChangePIN
+		request  = new(models.RequestChangePIN)
+		response models.ChangePINResponse
+	)
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "ChangePIN.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -177,7 +182,6 @@ func (svc accountService) ChangePIN(ctx echo.Context) error {
 		return ctx.JSON(http.StatusForbidden, result)
 	}
 
-	// Gunakan satu DBTransaction untuk semua operasi ChangePIN
 	var failedAttempts int
 	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
 		// Panggil repository function yang menangani semua operasi dalam satu transaksi
@@ -211,7 +215,6 @@ func (svc accountService) ChangePIN(ctx echo.Context) error {
 		}
 
 		// Error lainnya
-
 		utils.LogError(serviceName, request.AccountNumber, "ChangePIN.Transaction", err)
 		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
@@ -220,7 +223,7 @@ func (svc accountService) ChangePIN(ctx echo.Context) error {
 	// Sukses
 	utils.LogInfo(serviceName, request.AccountNumber, "ChangePIN.Success", "PIN changed successfully")
 
-	response := models.ChangePINResponse{
+	response = models.ChangePINResponse{
 		AccountNumber: request.AccountNumber,
 		ChangedAt:     time.Now(),
 	}
@@ -231,9 +234,15 @@ func (svc accountService) ChangePIN(ctx echo.Context) error {
 
 // ForgotPIN Inquiry
 func (svc accountService) ForgotPIN(ctx echo.Context) error {
-	var result models.Response
+	var (
+		result models.Response
+		// request    models.RequestForgotPIN
+		request    = new(models.RequestForgotPIN)
+		resetToken = helpers.GenerateResetToken()
+		expiryTime = time.Now().Add(5 * time.Minute)
+		response   models.ForgotPINResponse
+	)
 
-	request := new(models.RequestForgotPIN)
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		helpers.LOG("ERROR ForgotPIN - Validation failed", err.Error(), false)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -252,10 +261,8 @@ func (svc accountService) ForgotPIN(ctx echo.Context) error {
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	resetToken := helpers.GenerateResetToken()
-
 	//set expiry time
-	expiryTime := time.Now().Add(5 * time.Minute)
+
 	err = config.SetResetToken(resetToken, account.AccountNumber, expiryTime)
 	if err != nil {
 		helpers.LOG("ERROR ForgotPIN - Failed to store reset token", map[string]interface{}{
@@ -269,11 +276,10 @@ func (svc accountService) ForgotPIN(ctx echo.Context) error {
 
 	helpers.LOG("SUCCESS ForgotPIN - Reset token generated", map[string]interface{}{
 		"account_number": account.AccountNumber,
-		// "expires_at":     expiryTime.Format("2006-01-02 15:04:05"),
-		"expires_at": expiryTime.Format(constans.LAYOUT_TIMESTAMP),
+		"expires_at":     expiryTime.Format(constans.LAYOUT_TIMESTAMP),
 	}, false)
 
-	response := models.ForgotPINResponse{
+	response = models.ForgotPINResponse{
 		AccountNumber: account.AccountNumber,
 		ResetToken:    resetToken,
 		ExpiresAt:     expiryTime,
@@ -286,9 +292,14 @@ func (svc accountService) ForgotPIN(ctx echo.Context) error {
 
 // ResetPIN reset PIN dengan token dari Redis (Forgot PIN Confirm)
 func (svc accountService) ResetPIN(ctx echo.Context) error {
-	var result models.Response
-	serviceName := "AccountService" // Define the serviceName variable
-	request := new(models.RequestResetPIN)
+	var (
+		result      models.Response
+		serviceName = "AccountService"
+		// request     models.RequestResetPIN
+		request  = new(models.RequestResetPIN)
+		response models.ResetPINResponse
+	)
+
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "ResetPIN.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -344,7 +355,6 @@ func (svc accountService) ResetPIN(ctx echo.Context) error {
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
-	// Update PIN menggunakan transaction
 	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
 		return svc.Service.AccountRepo.UpdatePINWithTx(tx, accountNumber, hashedPIN)
 	})
@@ -364,7 +374,7 @@ func (svc accountService) ResetPIN(ctx echo.Context) error {
 
 	utils.LogInfo(serviceName, accountNumber, "ResetPIN.Success", "PIN reset successfully")
 
-	response := models.ResetPINResponse{
+	response = models.ResetPINResponse{
 		AccountNumber: account.AccountNumber,
 		ResetAt:       time.Now(),
 	}
@@ -375,9 +385,11 @@ func (svc accountService) ResetPIN(ctx echo.Context) error {
 
 // GetAccountList mendapatkan list semua akun
 func (svc accountService) GetAccountList(ctx echo.Context) error {
-	var result models.Response
-
-	serviceName := "AccountService" // Initialize serviceName
+	var (
+		result           models.Response
+		serviceName      = "AccountService"
+		accountResponses []models.AccountResponse
+	)
 
 	utils.LogInfo(serviceName, constans.EMPTY_VALUE, "GetAccountList", "Request received")
 
@@ -394,7 +406,6 @@ func (svc accountService) GetAccountList(ctx echo.Context) error {
 		return ctx.JSON(http.StatusOK, result)
 	}
 
-	var accountResponses []models.AccountResponse
 	for _, acc := range accounts {
 		accountResponses = append(accountResponses, models.AccountResponse{
 			ID:            acc.ID,
@@ -402,7 +413,7 @@ func (svc accountService) GetAccountList(ctx echo.Context) error {
 			AccountName:   acc.AccountName,
 			Balance:       acc.Balance,
 			AccountStatus: acc.AccountStatus,
-			CreatedAt:     acc.CreatedAt.Format(time.RFC3339), // Convert time.Time to string
+			CreatedAt:     acc.CreatedAt.Format(time.RFC3339),
 		})
 	}
 
@@ -415,9 +426,14 @@ func (svc accountService) GetAccountList(ctx echo.Context) error {
 
 // GetAccountByID mendapatkan detail akun berdasarkan ID
 func (svc accountService) GetAccountByID(ctx echo.Context) error {
-	var result models.Response
-	serviceName := "AccountService"
-	request := new(models.RequestGetAccountByID)
+	var (
+		result      models.Response
+		serviceName = "AccountService"
+		// request     models.RequestGetAccountByID
+		request  = new(models.RequestGetAccountByID)
+		response models.AccountResponse
+	)
+
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "GetAccountByID.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -433,16 +449,14 @@ func (svc accountService) GetAccountByID(ctx echo.Context) error {
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	// response := models.AccountResponse{
-	// 	ID:            account.ID,
-	// 	AccountNumber: account.AccountNumber,
-	// 	AccountName:   account.AccountName,
-	// 	Balance:       account.Balance,
-	// 	AccountStatus: account.AccountStatus,
-	// 	CreatedAt:     account.CreatedAt,
-	// }
-
-	response := account.ToAccountResponse()
+	response = models.AccountResponse{
+		ID:            account.ID,
+		AccountNumber: account.AccountNumber,
+		AccountName:   account.AccountName,
+		Balance:       account.Balance,
+		AccountStatus: account.AccountStatus,
+		CreatedAt:     account.CreatedAt.Format(time.RFC3339),
+	}
 
 	utils.LogInfo(serviceName, account.AccountNumber, "GetAccountByID.Success",
 		fmt.Sprintf("Account found: %s", account.AccountName))
@@ -453,9 +467,13 @@ func (svc accountService) GetAccountByID(ctx echo.Context) error {
 
 // UpdateAccount update data akun
 func (svc accountService) UpdateAccount(ctx echo.Context) error {
-	var result models.Response
-	serviceName := "AccountService"
-	request := new(models.RequestUpdateAccount)
+	var (
+		result      models.Response
+		serviceName = "AccountService"
+		request     = new(models.RequestUpdateAccount)
+		account     models.Account
+	)
+
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "UpdateAccount.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -465,6 +483,7 @@ func (svc accountService) UpdateAccount(ctx echo.Context) error {
 	utils.LogInfo(serviceName, fmt.Sprintf("%d", request.ID), "UpdateAccount",
 		fmt.Sprintf("Request: %+v", request))
 
+	// Cek apakah akun exists
 	_, err := svc.Service.AccountRepo.FindAccountById(request.ID)
 	if err != nil {
 		utils.LogError(serviceName, fmt.Sprintf("%d", request.ID), "UpdateAccount.FindAccountById", err)
@@ -472,29 +491,43 @@ func (svc accountService) UpdateAccount(ctx echo.Context) error {
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
-	account := models.Account{
+	account = models.Account{
 		ID:          request.ID,
 		AccountName: request.AccountName,
 	}
 
-	id, err := svc.Service.AccountRepo.UpdateAccount(account)
+	var accountID int
+
+	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
+		id, err := svc.Service.AccountRepo.UpdateAccount(account)
+		if err != nil {
+			return err
+		}
+		accountID = id
+		return nil
+	})
+
 	if err != nil {
-		utils.LogError(serviceName, fmt.Sprintf("%d", request.ID), "UpdateAccount.UpdateAccount", err)
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
+		utils.LogError(serviceName, fmt.Sprintf("%d", request.ID), "UpdateAccount.DBTransaction", err)
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to update account: "+err.Error(), nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 
-	utils.LogInfo(serviceName, fmt.Sprintf("%d", id), "UpdateAccount.Success", "Account updated successfully")
+	utils.LogInfo(serviceName, fmt.Sprintf("%d", accountID), "UpdateAccount.Success", "Account updated successfully")
 
-	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account updated successfully", id)
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account updated successfully", accountID)
 	return ctx.JSON(http.StatusOK, result)
 }
 
 // DeleteAccount delete akun
 func (svc accountService) DeleteAccount(ctx echo.Context) error {
-	var result models.Response
-	serviceName := "AccountService"
-	request := new(models.RequestDeleteAccount)
+	var (
+		result      models.Response
+		serviceName = "AccountService"
+		// request     models.RequestDeleteAccount
+		request = new(models.RequestDeleteAccount)
+	)
+
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "DeleteAccount.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -503,6 +536,7 @@ func (svc accountService) DeleteAccount(ctx echo.Context) error {
 
 	utils.LogInfo(serviceName, fmt.Sprintf("%d", request.ID), "DeleteAccount", "Request received")
 
+	// Cek apakah akun exists
 	account, err := svc.Service.AccountRepo.FindAccountById(request.ID)
 	if err != nil {
 		utils.LogError(serviceName, fmt.Sprintf("%d", request.ID), "DeleteAccount.FindAccountById", err)
@@ -510,6 +544,7 @@ func (svc accountService) DeleteAccount(ctx echo.Context) error {
 		return ctx.JSON(http.StatusNotFound, result)
 	}
 
+	// Validasi balance harus 0
 	if account.Balance > 0 {
 		utils.LogError(serviceName, account.AccountNumber, "DeleteAccount.ValidateBalance",
 			fmt.Errorf("Cannot delete account with remaining balance: %.2f", account.Balance))
@@ -517,10 +552,13 @@ func (svc accountService) DeleteAccount(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	err = svc.Service.AccountRepo.RemoveAccount(request.ID)
+	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
+		return svc.Service.AccountRepo.RemoveAccount(request.ID)
+	})
+
 	if err != nil {
-		utils.LogError(serviceName, account.AccountNumber, "DeleteAccount.RemoveAccount", err)
-		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, err.Error(), nil)
+		utils.LogError(serviceName, account.AccountNumber, "DeleteAccount.DBTransaction", err)
+		result = helpers.ResponseJSON(false, constans.SYSTEM_ERROR_CODE, "Failed to delete account: "+err.Error(), nil)
 		return ctx.JSON(http.StatusInternalServerError, result)
 	}
 

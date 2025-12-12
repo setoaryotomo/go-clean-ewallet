@@ -72,11 +72,38 @@ type TransactionResponse struct {
 	TransactionTime     time.Time `json:"transaction_time"`
 }
 
+type DepositResponse struct {
+	AccountNumber   string  `json:"account_number"`
+	AccountName     string  `json:"account_name"`
+	BalanceBefore   float64 `json:"balance_before"`
+	Amount          float64 `json:"amount"`
+	BalanceAfter    float64 `json:"balance_after"`
+	TransactionDate string  `json:"transaction_date"`
+}
+
+type WithdrawResponse struct {
+	AccountNumber   string  `json:"account_number"`
+	AccountName     string  `json:"account_name"`
+	BalanceBefore   float64 `json:"balance_before"`
+	Amount          float64 `json:"amount"`
+	BalanceAfter    float64 `json:"balance_after"`
+	TransactionDate string  `json:"transaction_date"`
+}
+
 type TransferResponse struct {
 	FromAccountNumber string    `json:"source_number"`
 	ToAccountNumber   string    `json:"beneficiary_number"`
 	Amount            float64   `json:"amount"`
+	FromBalanceAfter  float64   `json:"from_balance_after"`
+	FromBalanceBefore float64   `json:"from_balance_before"`
+	ToBalanceAfter    float64   `json:"to_balance_after"`
+	ToBalanceBefore   float64   `json:"to_balance_before"`
 	TransactionDate   time.Time `json:"transaction_date"`
+}
+
+type TransactionListResponse struct {
+	Transactions []TransactionResponse `json:"transactions"`
+	TotalRecords int                   `json:"total_records"`
 }
 
 type TransactionHistoryResponse struct {

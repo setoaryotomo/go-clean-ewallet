@@ -28,9 +28,21 @@ func NewTransactionService(service services.UsecaseService) transactionService {
 
 // Deposit menambah saldo
 func (svc transactionService) Deposit(ctx echo.Context) error {
-	var result models.Response
-	serviceName := "TransactionService.Deposit"
-	request := new(models.RequestDeposit)
+	var (
+		result      models.Response
+		serviceName = "TransactionService.Deposit"
+		// request         models.RequestDeposit
+		request = new(models.RequestDeposit)
+		account models.Account
+
+		transactionTime             = time.Now()
+		updatedAt                   = transactionTime.Format(constans.LAYOUT_TIMESTAMP)
+		balanceAfter, balanceBefore float64
+
+		transaction models.Transaction
+		response    models.DepositResponse
+	)
+
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "Deposit.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -76,12 +88,6 @@ func (svc transactionService) Deposit(ctx echo.Context) error {
 	// Reset failed attempts on successful PIN
 	svc.Service.AccountRepo.ResetFailedPINAttempts(request.AccountNumber)
 
-	balanceBefore := account.Balance
-	transactionTime := time.Now()
-	updatedAt := transactionTime.Format(constans.LAYOUT_TIMESTAMP)
-
-	var balanceAfter float64
-
 	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
 		lastBalance, err := svc.Service.AccountRepo.IncrementDecrementLastBalance(
 			account.ID,
@@ -93,9 +99,10 @@ func (svc transactionService) Deposit(ctx echo.Context) error {
 		if err != nil {
 			return err
 		}
+		balanceBefore = account.Balance
 		balanceAfter = lastBalance
 
-		transaction := models.Transaction{
+		transaction = models.Transaction{
 			AccountID:         account.ID,
 			AccountNumber:     account.AccountNumber,
 			AccountName:       account.AccountName,
@@ -123,13 +130,13 @@ func (svc transactionService) Deposit(ctx echo.Context) error {
 	utils.LogInfo(serviceName, request.AccountNumber, "Deposit.Success",
 		fmt.Sprintf("Amount: %.2f, Balance Before: %.2f, Balance After: %.2f", request.Amount, balanceBefore, balanceAfter))
 
-	response := map[string]interface{}{
-		"account_number":   account.AccountNumber,
-		"account_name":     account.AccountName,
-		"balance_before":   balanceBefore,
-		"amount":           request.Amount,
-		"balance_after":    balanceAfter,
-		"transaction_date": updatedAt,
+	response = models.DepositResponse{
+		AccountNumber:   account.AccountNumber,
+		AccountName:     account.AccountName,
+		BalanceBefore:   balanceBefore,
+		Amount:          request.Amount,
+		BalanceAfter:    balanceAfter,
+		TransactionDate: updatedAt,
 	}
 
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Deposit successful", response)
@@ -138,9 +145,20 @@ func (svc transactionService) Deposit(ctx echo.Context) error {
 
 // Withdraw menarik saldo
 func (svc transactionService) Withdraw(ctx echo.Context) error {
-	var result models.Response
-	serviceName := "TransactionService.Withdraw"
-	request := new(models.RequestWithdraw)
+	var (
+		result      models.Response
+		serviceName = "TransactionService.Withdraw"
+		// request         models.RequestWithdraw
+		request                     = new(models.RequestWithdraw)
+		account                     models.Account
+		transactionTime             = time.Now()
+		updatedAt                   = transactionTime.Format(constans.LAYOUT_TIMESTAMP)
+		balanceAfter, balanceBefore float64
+
+		transaction models.Transaction
+		response    models.WithdrawResponse
+	)
+
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "Withdraw.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -193,12 +211,6 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, result)
 	}
 
-	balanceBefore := account.Balance
-	transactionTime := time.Now()
-	updatedAt := transactionTime.Format(constans.LAYOUT_TIMESTAMP)
-
-	var balanceAfter float64
-
 	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
 		lastBalance, err := svc.Service.AccountRepo.IncrementDecrementLastBalance(
 			account.ID,
@@ -210,6 +222,7 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 		if err != nil {
 			return err
 		}
+		balanceBefore = account.Balance
 		balanceAfter = lastBalance
 
 		if balanceAfter < 0 {
@@ -219,7 +232,7 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 			}
 		}
 
-		transaction := models.Transaction{
+		transaction = models.Transaction{
 			AccountID:         account.ID,
 			AccountNumber:     account.AccountNumber,
 			AccountName:       account.AccountName,
@@ -256,13 +269,13 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 	utils.LogInfo(serviceName, request.AccountNumber, "Withdraw.Success",
 		fmt.Sprintf("Amount: %.2f, Balance Before: %.2f, Balance After: %.2f", request.Amount, balanceBefore, balanceAfter))
 
-	response := map[string]interface{}{
-		"account_number":   account.AccountNumber,
-		"account_name":     account.AccountName,
-		"balance_before":   balanceBefore,
-		"amount":           request.Amount,
-		"balance_after":    balanceAfter,
-		"transaction_date": updatedAt,
+	response = models.WithdrawResponse{
+		AccountNumber:   account.AccountNumber,
+		AccountName:     account.AccountName,
+		BalanceBefore:   balanceBefore,
+		Amount:          request.Amount,
+		BalanceAfter:    balanceAfter,
+		TransactionDate: updatedAt,
 	}
 
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Withdraw successful", response)
@@ -271,9 +284,19 @@ func (svc transactionService) Withdraw(ctx echo.Context) error {
 
 // Transfer antar akun
 func (svc transactionService) Transfer(ctx echo.Context) error {
-	var result models.Response
-	serviceName := "TransactionService.Transfer"
-	request := new(models.RequestTransfer)
+	var (
+		result      models.Response
+		serviceName = "TransactionService.Transfer"
+		// request          models.RequestTransfer
+		request          = new(models.RequestTransfer)
+		fromBalanceAfter float64
+		toBalanceAfter   float64
+
+		debitTransaction  models.Transaction
+		creditTransaction models.Transaction
+		response          models.TransferResponse
+	)
+
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "Transfer.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -346,8 +369,6 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 	transactionTime := time.Now()
 	updatedAt := transactionTime.Format(constans.LAYOUT_TIMESTAMP)
 
-	var fromBalanceAfter, toBalanceAfter float64
-
 	err = utils.DBTransaction(svc.Service.RepoDB, func(tx *sql.Tx) error {
 		lastBalance, err := svc.Service.AccountRepo.IncrementDecrementLastBalance(
 			fromAccount.ID,
@@ -368,7 +389,7 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 			}
 		}
 
-		debitTransaction := models.Transaction{
+		debitTransaction = models.Transaction{
 			AccountID:         fromAccount.ID,
 			AccountNumber:     fromAccount.AccountNumber,
 			AccountName:       fromAccount.AccountName,
@@ -396,7 +417,7 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 		}
 		toBalanceAfter = lastBalance
 
-		creditTransaction := models.Transaction{
+		creditTransaction = models.Transaction{
 			AccountID:         toAccount.ID,
 			AccountNumber:     toAccount.AccountNumber,
 			AccountName:       toAccount.AccountName,
@@ -435,21 +456,15 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 			toAccount.AccountNumber, toAccount.AccountName, request.Amount,
 			fromBalanceBefore, fromBalanceAfter, toBalanceBefore, toBalanceAfter))
 
-	response := map[string]interface{}{
-		"transaction_date": updatedAt,
-		"sender": map[string]interface{}{
-			"account_number": request.FromAccountNumber,
-			"account_name":   fromAccount.AccountName,
-			"balance_before": fromBalanceBefore,
-			"balance_after":  fromBalanceAfter,
-		},
-		"beneficiary": map[string]interface{}{
-			"account_number": request.ToAccountNumber,
-			"account_name":   toAccount.AccountName,
-			"balance_before": toBalanceBefore,
-			"balance_after":  toBalanceAfter,
-		},
-		"amount": request.Amount,
+	response = models.TransferResponse{
+		FromAccountNumber: request.FromAccountNumber,
+		ToAccountNumber:   request.ToAccountNumber,
+		Amount:            request.Amount,
+		FromBalanceBefore: fromBalanceBefore,
+		FromBalanceAfter:  fromBalanceAfter,
+		ToBalanceBefore:   toBalanceBefore,
+		ToBalanceAfter:    toBalanceAfter,
+		TransactionDate:   time.Now(),
 	}
 
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Transfer successful", response)
@@ -458,9 +473,15 @@ func (svc transactionService) Transfer(ctx echo.Context) error {
 
 // GetTransactionHistory mendapatkan riwayat transaksi
 func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
-	var result models.Response
-	serviceName := "TransactionService.GetTransactionHistory"
-	request := new(models.RequestTransactionHistory)
+	var (
+		result      models.Response
+		serviceName = "TransactionService.GetTransactionHistory"
+		// request      models.RequestTransactionHistory
+		request      = new(models.RequestTransactionHistory)
+		response     models.TransactionHistorySimpleResponse
+		responseData models.TransactionListResponse
+	)
+
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "GetTransactionHistory.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -548,7 +569,7 @@ func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 		// Dengan pagination
 		totalPages := int(math.Ceil(float64(totalRecords) / float64(limit)))
 
-		response := models.TransactionHistorySimpleResponse{
+		response = models.TransactionHistorySimpleResponse{
 			Transactions: transactionResponses,
 			Pagination: models.PaginationMeta{
 				CurrentPage:  page,
@@ -561,9 +582,19 @@ func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 		result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, message, response)
 	} else {
 		// Tanpa pagination - hanya return array transactions
-		responseData := map[string]interface{}{
-			"transactions":  transactionResponses,
-			"total_records": totalRecords,
+		responseData = models.TransactionListResponse{
+			Transactions: make([]models.TransactionResponse, 0, len(transactionResponses)),
+			TotalRecords: totalRecords,
+		}
+
+		for _, tx := range transactionResponses {
+			responseData.Transactions = append(responseData.Transactions, models.TransactionResponse{
+				ID:            tx.ID,
+				AccountNumber: tx.AccountNumber,
+				Amount:        tx.Amount,
+				// TransactionDate: tx.TransactionDate.Format(time.RFC3339),
+				// Description:   tx.Description,
+			})
 		}
 
 		result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, message, responseData)
@@ -574,10 +605,14 @@ func (svc transactionService) GetTransactionHistory(ctx echo.Context) error {
 
 // GetTransactionDetail mendapatkan detail transaksi
 func (svc transactionService) GetTransactionDetail(ctx echo.Context) error {
-	var result models.Response
-	serviceName := "TransactionService.GetTransactionDetail"
+	var (
+		result      models.Response
+		serviceName = "TransactionService.GetTransactionDetail"
+		// request     models.RequestTransactionDetail
+		request  = new(models.RequestTransactionDetail)
+		response models.TransactionDetailResponse
+	)
 
-	request := new(models.RequestTransactionDetail)
 	if err := helpers.BindValidateStruct(ctx, request); err != nil {
 		utils.LogError(serviceName, constans.EMPTY_VALUE, "GetTransactionDetail.BindValidateStruct", err)
 		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
@@ -599,7 +634,17 @@ func (svc transactionService) GetTransactionDetail(ctx echo.Context) error {
 		fmt.Sprintf("Account: %s, Type: %s, Amount: %.2f",
 			transaction.AccountNumber, transaction.TransactionType, transaction.Amount))
 
-	response := transaction.ToDetailResponse()
+	response = models.TransactionDetailResponse{
+		ID:                transaction.ID,
+		AccountNumber:     transaction.AccountNumber,
+		AccountName:       transaction.AccountName,
+		SourceNumber:      transaction.SourceNumber,
+		BeneficiaryNumber: transaction.BeneficiaryNumber,
+		TransactionType:   transaction.TransactionType,
+		Amount:            transaction.Amount,
+		CreatedAt:         time.Now().Format(constans.LAYOUT_TIMESTAMP),
+		TransactionTime:   transaction.TransactionTime.Format(constans.LAYOUT_TIMESTAMP),
+	}
 
 	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Transaction detail retrieved successfully", response)
 	return ctx.JSON(http.StatusOK, result)
