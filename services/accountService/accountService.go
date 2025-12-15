@@ -465,6 +465,45 @@ func (svc accountService) GetAccountByID(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, result)
 }
 
+// GetBalanceInquiry mendapatkan detail akun berdasarkan nomor rekening
+func (svc accountService) GetBalanceInquiry(ctx echo.Context) error {
+	var (
+		result      models.Response
+		serviceName = "AccountService"
+		request     = new(models.RequestBalanceInquiry)
+		response    models.BalanceInquiryResponse
+	)
+
+	if err := helpers.BindValidateStruct(ctx, request); err != nil {
+		utils.LogError(serviceName, constans.EMPTY_VALUE, "GetBalanceInquiry.BindValidateStruct", err)
+		result = helpers.ResponseJSON(false, constans.VALIDATE_ERROR_CODE, err.Error(), nil)
+		return ctx.JSON(http.StatusBadRequest, result)
+	}
+
+	utils.LogInfo(serviceName, request.AccountNumber, "GetBalanceInquiry", "Request received")
+
+	account, err := svc.Service.AccountRepo.FindAccountByNumber(request.AccountNumber)
+	if err != nil {
+		utils.LogError(serviceName, request.AccountNumber, "GetBalanceInquiry.FindAccountByNumber", err)
+		result = helpers.ResponseJSON(false, constans.DATA_NOT_FOUND_CODE, "Account not found", nil)
+		return ctx.JSON(http.StatusNotFound, result)
+	}
+
+	response = models.BalanceInquiryResponse{
+		ID:            account.ID,
+		AccountNumber: account.AccountNumber,
+		AccountName:   account.AccountName,
+		Balance:       account.Balance,
+		AccountStatus: account.AccountStatus,
+	}
+
+	utils.LogInfo(serviceName, account.AccountNumber, "GetBalanceInquiry.Success",
+		fmt.Sprintf("Account found: %s", account.AccountName))
+
+	result = helpers.ResponseJSON(true, constans.SUCCESS_CODE, "Account retrieved successfully", response)
+	return ctx.JSON(http.StatusOK, result)
+}
+
 // UpdateAccount update data akun
 func (svc accountService) UpdateAccount(ctx echo.Context) error {
 	var (

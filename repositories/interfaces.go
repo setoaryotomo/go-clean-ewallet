@@ -5,40 +5,6 @@ import (
 	"sample/models"
 )
 
-// ProductRepository
-type ProductRepository interface {
-	FindProductById(id int) (models.Product, error)
-	FindProductByIndex(code string) (models.Product, error)
-	IsProductExistsByIndex(code string) (models.Product, bool)
-	AddProduct(product models.Product) (int, error)
-	UpdateProduct(product models.Product) (int, error)
-	RemoveProduct(id int) error
-	GetProductList() ([]models.Product, error)
-}
-
-// WarehouseRepository
-type WarehouseRepository interface {
-	FindWarehouseById(id int) (models.Warehouse, error)
-}
-
-// ProductMongoRepository
-type ProductMongoRepository interface {
-	AddProductMongo(product models.Product) error
-}
-
-// PedagangKiosPoinRepository
-type PedagangKiosPoinRepository interface {
-	FindPedagangKiosDataByDate(date string) ([]models.PedagangKiosPoin, error)
-	AddPedagangKiosPoin([]models.PedagangKiosPoin) (bool, error)
-}
-
-// PedagangKiosGradingRepository
-type PedagangKiosGradingRepository interface {
-	FindPedagangKiosGradingWeekly(idcorporate, week int) ([]models.PedagangKiosGradingWeekly, error)
-	AddPedagangKiosGradingWeekly([]models.ResponseFindPedagangKiosGradingWeekly) (bool, error)
-	FindWeekPoinBonus() ([]models.WeekPoinBonus, error)
-}
-
 // AccountRepository
 type AccountRepository interface {
 	FindAccountById(id int) (models.Account, error)

@@ -40,6 +40,10 @@ type RequestUpdateBalance struct {
 	Amount        float64 `json:"amount" validate:"required,min=10000"`
 }
 
+type RequestBalanceInquiry struct {
+	AccountNumber string `json:"account_number" validate:"required"`
+}
+
 type RequestChangePIN struct {
 	AccountNumber string `json:"account_number" validate:"required"`
 	OldPIN        string `json:"old_pin" validate:"required,len=6"`
@@ -84,6 +88,14 @@ type AccountResponse struct {
 	AccountStatus string  `json:"account_status"`
 	// CreatedAt     time.Time `json:"created_at"`
 	CreatedAt string `json:"created_at"`
+}
+
+type BalanceInquiryResponse struct {
+	ID            int     `json:"id"`
+	AccountNumber string  `json:"account_number"`
+	Balance       float64 `json:"balance"`
+	AccountName   string  `json:"account_name"`
+	AccountStatus string  `json:"account_status"`
 }
 
 // AccountDetailResponse - Response detail dengan UpdatedAt
