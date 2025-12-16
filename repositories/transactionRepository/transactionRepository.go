@@ -204,3 +204,147 @@ func (ctx transactionRepository) GetTransactionHistory(accountNumber string, sta
 
 	return transactions, totalRecords, nil
 }
+
+// DataCountAndSumTransactionListByIndex - Count dan sum untuk transaction list
+func (ctx transactionRepository) DataCountAndSumTransactionListByIndex(countOnly bool, filter models.RequestTransactionHistoryList) (models.ResultDataTableTransactionCountAndSummaries, error) {
+	var (
+		result models.ResultDataTableTransactionCountAndSummaries
+		args   []interface{}
+		query  string
+		err    error
+	)
+
+	if !countOnly {
+		query = `SELECT COUNT(1),
+			COALESCE(SUM(CASE WHEN transaction_type = 'D' THEN amount ELSE 0 END), 0) AS totdebit,
+			COALESCE(SUM(CASE WHEN transaction_type = 'C' THEN amount ELSE 0 END), 0) AS totcredit
+			FROM transaction WHERE deleted_at IS NULL`
+	} else {
+		query = `SELECT COUNT(1) FROM transaction WHERE deleted_at IS NULL`
+	}
+
+	// Filter by date range
+	if filter.StartDate != "" && filter.EndDate != "" {
+		query += ` AND DATE(transaction_time) >= ? AND DATE(transaction_time) <= ?`
+		args = append(args, filter.StartDate, filter.EndDate)
+	}
+
+	// Filter by account number
+	if filter.AccountNumber != "" {
+		query += ` AND account_number = ?`
+		args = append(args, filter.AccountNumber)
+	}
+
+	// Filter by search value (searching in account_number, account_name, source_number, beneficiary_number)
+	if filter.SearchValue != "" {
+		query += ` AND (account_number ILIKE '%' || ? || '%' OR account_name ILIKE '%' || ? || '%' OR source_number ILIKE '%' || ? || '%' OR beneficiary_number ILIKE '%' || ? || '%')`
+		args = append(args, filter.SearchValue, filter.SearchValue, filter.SearchValue, filter.SearchValue)
+	}
+
+	query = helpers.ReplaceSQL(query, "?")
+
+	if !countOnly {
+		err = ctx.RepoDB.DB.QueryRow(query, args...).Scan(&result.Count, &result.SumariesDebit, &result.SumariesCredit)
+	} else {
+		err = ctx.RepoDB.DB.QueryRow(query, args...).Scan(&result.Count)
+	}
+
+	return result, err
+}
+
+// DataGetTransactionListByIndex - Get transaction list dengan filter
+func (ctx transactionRepository) DataGetTransactionListByIndex(filter models.RequestTransactionHistoryList) ([]models.Transaction, error) {
+	var (
+		result []models.Transaction
+		args   []interface{}
+		query  string
+	)
+
+	query = `
+		SELECT id, account_id, account_number, account_name, 
+			   source_number, beneficiary_number, 
+			   transaction_type, amount, transaction_time, created_at
+		FROM transaction
+		WHERE deleted_at IS NULL
+	`
+
+	// Filter by date range
+	if filter.StartDate != "" && filter.EndDate != "" {
+		query += ` AND DATE(transaction_time) >= ? AND DATE(transaction_time) <= ?`
+		args = append(args, filter.StartDate, filter.EndDate)
+	}
+
+	// Filter by account number
+	if filter.AccountNumber != "" {
+		query += ` AND account_number = ?`
+		args = append(args, filter.AccountNumber)
+	}
+
+	// Filter by search value
+	if filter.SearchValue != "" {
+		query += ` AND (account_number ILIKE '%' || ? || '%' OR account_name ILIKE '%' || ? || '%' OR source_number ILIKE '%' || ? || '%' OR beneficiary_number ILIKE '%' || ? || '%')`
+		args = append(args, filter.SearchValue, filter.SearchValue, filter.SearchValue, filter.SearchValue)
+	}
+
+	// Sorting
+	if filter.ColumnOrder != "" && filter.AscDesc != "" {
+		query += ` ORDER BY ` + filter.ColumnOrder + ` ` + filter.AscDesc
+	} else {
+		query += ` ORDER BY transaction_time DESC`
+	}
+
+	// Pagination
+	if filter.PageNumber > 0 && filter.PageSize > 0 {
+		offset := (filter.PageNumber - 1) * filter.PageSize
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, filter.PageSize, offset)
+	}
+
+	query = helpers.ReplaceSQL(query, "?")
+
+	rows, err := ctx.RepoDB.DB.Query(query, args...)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+
+	data, err := transactionDto(rows)
+	if err != nil {
+		return result, err
+	}
+
+	return data, nil
+}
+
+// transactionDto - Helper untuk mapping rows ke Transaction struct
+func transactionDto(rows *sql.Rows) ([]models.Transaction, error) {
+	var result []models.Transaction
+
+	for rows.Next() {
+		var val models.Transaction
+		var sourceNumber, beneficiaryNumber sql.NullString
+
+		err := rows.Scan(
+			&val.ID,
+			&val.AccountID,
+			&val.AccountNumber,
+			&val.AccountName,
+			&sourceNumber,
+			&beneficiaryNumber,
+			&val.TransactionType,
+			&val.Amount,
+			&val.TransactionTime,
+			&val.CreatedAt,
+		)
+		if err != nil {
+			return result, err
+		}
+
+		val.SourceNumber = sourceNumber.String
+		val.BeneficiaryNumber = beneficiaryNumber.String
+
+		result = append(result, val)
+	}
+
+	return result, nil
+}

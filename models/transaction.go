@@ -57,6 +57,19 @@ type RequestTransactionDetail struct {
 	TransactionID int `json:"transaction_id" validate:"required,min=1"`
 }
 
+// Request model untuk Transaction History List V2
+type RequestTransactionHistoryList struct {
+	AccountNumber string `json:"account_number"`
+	StartDate     string `json:"start_date"` // Format: 2006-01-02
+	EndDate       string `json:"end_date"`   // Format: 2006-01-02
+	SearchValue   string `json:"search_value"`
+	Draw          int    `json:"draw"`
+	AscDesc       string `json:"asc_desc"`          // ASC atau DESC
+	ColumnOrder   string `json:"column_order_name"` // Nama kolom untuk sorting
+	PageNumber    int    `json:"page_number"`
+	PageSize      int    `json:"page_size" validate:"required"`
+}
+
 // Response Models
 
 type TransactionResponse struct {
@@ -148,6 +161,35 @@ type TransactionSimpleResponse struct {
 type TransactionHistorySimpleResponse struct {
 	Transactions []TransactionSimpleResponse `json:"transactions"`
 	Pagination   PaginationMeta              `json:"pagination"`
+}
+
+// Response model untuk Transaction History List V2
+type ResponseTransactionHistoryListV2 struct {
+	ID            int    `json:"id"`
+	AccountID     int    `json:"account_id"`
+	AccountNumber string `json:"account_number"`
+	AccountName   string `json:"account_name"`
+	// SourceNumber      string    `json:"source_number,omitempty"`
+	// BeneficiaryNumber string    `json:"beneficiary_number,omitempty"`
+	TransactionType string  `json:"transaction_type"` // D atau C
+	Amount          float64 `json:"amount"`
+	TransactionTime string  `json:"transaction_time"` // Format: YYYY-MM-DD HH:MM:SS
+	CreatedAt       string  `json:"created_at"`       // Format: YYYY-MM-DD HH:MM:SS
+}
+
+// Response wrapper untuk Transaction History V2
+type ResponseTransactionHistoryV2 struct {
+	ReferenceNo     string                             `json:"referenceNo"`
+	RecordsFiltered int                                `json:"recordsFiltered"`
+	RecordsTotal    int                                `json:"recordsTotal"`
+	Value           []ResponseTransactionHistoryListV2 `json:"value"`
+}
+
+// Result model untuk count dan summaries
+type ResultDataTableTransactionCountAndSummaries struct {
+	Count          int64   `json:"count"`
+	SumariesDebit  float64 `json:"sumaries_debit"`
+	SumariesCredit float64 `json:"sumaries_credit"`
 }
 
 // Helper function untuk membuat deskripsi transaksi

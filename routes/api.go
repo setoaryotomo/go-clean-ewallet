@@ -5,6 +5,7 @@ import (
 	"sample/config"
 	"sample/services"
 	"sample/services/accountService"
+	"sample/services/transactionHistoryService"
 	"sample/services/transactionService"
 
 	"github.com/labstack/echo"
@@ -40,6 +41,7 @@ func RoutesApi(e echo.Echo, usecaseSvc services.UsecaseService) {
 	// Transaction Service
 	// ============================================
 	transactionSvc := transactionService.NewTransactionService(usecaseSvc)
+	transactionHistorySvc := transactionHistoryService.NewTransactionHistoryService(usecaseSvc)
 	transactionGroup := public.Group("/transaction")
 
 	// Basic Transactions
@@ -48,8 +50,9 @@ func RoutesApi(e echo.Echo, usecaseSvc services.UsecaseService) {
 	transactionGroup.POST("/transfer", transactionSvc.Transfer) // Transfer antar akun
 
 	// Transaction History
-	transactionGroup.POST("/history", transactionSvc.GetTransactionHistory) // Riwayat transaksi
-	transactionGroup.POST("/detail", transactionSvc.GetTransactionDetail)   // Detail transaksi
+	transactionGroup.POST("/history-v2", transactionHistorySvc.TransactionHistoryListV2) // Riwayat transaksi
+	transactionGroup.POST("/history", transactionSvc.GetTransactionHistory)              // Riwayat transaksi
+	transactionGroup.POST("/detail", transactionSvc.GetTransactionDetail)                // Detail transaksi
 
 	// ============================================
 	// Private Routes (Authenticated)

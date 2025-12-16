@@ -28,4 +28,6 @@ type TransactionRepository interface {
 	AddTransaction(transaction models.Transaction) (int, error)
 	FindTransactionById(id int) (models.Transaction, error)
 	GetTransactionHistory(accountNumber string, startDate, endDate string, limit, page int) ([]models.Transaction, int, error)
+	DataCountAndSumTransactionListByIndex(countOnly bool, filter models.RequestTransactionHistoryList) (models.ResultDataTableTransactionCountAndSummaries, error)
+	DataGetTransactionListByIndex(filter models.RequestTransactionHistoryList) ([]models.Transaction, error)
 }
